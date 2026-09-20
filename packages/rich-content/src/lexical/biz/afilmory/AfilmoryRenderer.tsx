@@ -1,10 +1,16 @@
 'use client'
 
 import clsx from 'clsx'
-import { useMemo } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 
 import { usePrintFallback } from '../../../host'
-
 import { ImagePlaceholder } from '../../../lib/image-placeholder'
 import {
   AfilmoryGlyph,
@@ -62,6 +68,11 @@ export function AfilmoryRenderer(props: AfilmorySlotProps) {
 function aspectFromDims(w: number, h: number): string {
   if (w > 0 && h > 0) return `${w} / ${h}`
   return '3 / 2'
+}
+
+function ratioFromDims(w: number, h: number): number {
+  if (w > 0 && h > 0) return w / h
+  return 3 / 2
 }
 
 function getDisplayAspect(photo: AfilmoryManifestPhoto): string {
@@ -371,6 +382,7 @@ interface GalleryTile {
   hash?: string
   id: string
   photo?: AfilmoryManifestPhoto
+  ratio: number
 }
 
 function tilesFromSource(
@@ -387,6 +399,7 @@ function tilesFromSource(
       aspect: aspectFromDims(item.w, item.h),
       hash: item.hash,
       photo: photoById.get(item.id),
+      ratio: ratioFromDims(item.w, item.h),
     }))
   }
   return photos.map((p) => ({
@@ -394,6 +407,7 @@ function tilesFromSource(
     aspect: getDisplayAspect(p),
     hash: p.thumbHash,
     photo: p,
+    ratio: ratioFromDims(p.width, p.height),
   }))
 }
 
@@ -477,21 +491,26 @@ function CollectionHeader({
   )
 }
 
-function gridClassFor(layout: AfilmoryLayout): string {
+// 'grid' used to return a multi-column flow too, differing from masonry only
+// by 2px of gutter — the editor's two options rendered the same thing. Grid is
+// now an actual grid of equal square cells; masonry keeps the ragged flow.
+function collectionBodyClassFor(layout: AfilmoryLayout): string {
   if (layout === 'masonry') {
     return 'columns-2 gap-1 sm:columns-3 md:columns-4'
   }
-  return 'columns-2 gap-1.5 sm:columns-3 md:columns-4'
+  return 'grid grid-cols-2 gap-1.5 sm:grid-cols-3 md:grid-cols-4'
 }
 
 function PhotoTile({
   accent,
   baseUrl,
   tile,
+  variant,
 }: {
   accent?: string
   baseUrl: string
   tile: GalleryTile
+  variant: 'grid' | 'masonry'
 }) {
   const { photo } = tile
   const thumb = photo ? resolveAssetUrl(baseUrl, photo.thumbnailUrl) : undefined
@@ -501,11 +520,13 @@ function PhotoTile({
     <a
       href={href}
       rel="noopener noreferrer"
-      style={{ aspectRatio: tile.aspect }}
+      style={variant === 'masonry' ? { aspectRatio: tile.aspect } : undefined}
       target="_blank"
       className={clsx(
-        'group/tile relative mb-1 block overflow-hidden no-underline break-inside-avoid',
-        'bg-neutral-2 dark:bg-neutral-1',
+        'group/tile relative block overflow-hidden bg-neutral-2 no-underline',
+        variant === 'masonry'
+          ? 'mb-1 break-inside-avoid'
+          : 'aspect-square',
       )}
     >
       {tile.hash ? (
@@ -541,61 +562,544 @@ function PhotoTile({
   )
 }
 
-function CarouselRow({
+// ────────────────────────────────────────────────────────────────────────────
+// Stacked deck view (layout === 'carousel')
+// ────────────────────────────────────────────────────────────────────────────
+
+// Top card plus three behind it. A fifth card would only add visual noise, so
+// everything deeper shares the last slot's transform and sits fully hidden.
+const DECK_VISIBLE_CARDS = 4
+const DECK_SWIPE_THRESHOLD = 40
+
+// A square card is the one shape that treats 3:2 and 2:3 identically — a photo
+// inscribed either way covers exactly the same area — so a deck of mixed
+// orientations needs no cropping and still keeps one silhouette. The paper
+// showing around the photo is the mount, not wasted space.
+const DECK_CARD_RATIO = 1
+
+// Offsets alternate sides so the stack reads as letters dropped on a desk
+// rather than a machine-squared deck of playing cards.
+const DECK_DEPTH_TRANSFORMS = [
+  'translate(0px, 0px) rotate(0deg) scale(1)',
+  'translate(-7px, 9px) rotate(1.5deg) scale(0.972)',
+  'translate(6px, 18px) rotate(-1.7deg) scale(0.945)',
+  'translate(-4px, 26px) rotate(0.9deg) scale(0.92)',
+]
+
+// The waypoint the travelling card passes through: lifted off the stack and
+// swung out to the left. Forward runs depth-0 → aside → back; backward runs
+// the same path in reverse, so the two directions mirror each other exactly.
+const DECK_ASIDE_TRANSFORM = 'translate(-20%, -9%) rotate(-6deg) scale(1.02)'
+
+// The lift used to run 150ms on a front-loaded curve, which spent ~70% of the
+// travel in the first three frames and read as a jump rather than a glide.
+const DECK_LIFT_MS = 240
+const DECK_SETTLE_MS = 200
+const DECK_LIFT_EASE = 'cubic-bezier(0.33, 0, 0.2, 1)'
+const DECK_SETTLE_EASE = 'cubic-bezier(0.32, 0.72, 0, 1)'
+
+interface DeckAnimation {
+  dir: -1 | 1
+  phase: 'lift' | 'settle'
+}
+
+function depthTransform(depth: number): string {
+  const slot = Math.min(depth, DECK_DEPTH_TRANSFORMS.length - 1)
+  return DECK_DEPTH_TRANSFORMS[slot]!
+}
+
+function wrapIndex(value: number, total: number): number {
+  if (total <= 0) return 0
+  return ((value % total) + total) % total
+}
+
+// Which tile sits in which slot. The neighbours on either side are parked at
+// the deepest slot — already mounted, fully hidden — so a turn never has to
+// mount a card mid-flight and lose its starting transform.
+function deckLayout(
+  index: number,
+  total: number,
+  slots: number,
+): Map<number, number> {
+  const layout = new Map<number, number>()
+  for (let depth = 0; depth < slots; depth++) {
+    const tileIndex = wrapIndex(index + depth, total)
+    if (!layout.has(tileIndex)) layout.set(tileIndex, depth)
+  }
+  for (const parked of [wrapIndex(index - 1, total), wrapIndex(index + slots, total)]) {
+    if (!layout.has(parked)) layout.set(parked, slots)
+  }
+  return layout
+}
+
+const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
+
+function subscribeReducedMotion(onChange: () => void): () => void {
+  if (typeof window === 'undefined' || !window.matchMedia) return () => {}
+  const query = window.matchMedia(REDUCED_MOTION_QUERY)
+  query.addEventListener('change', onChange)
+  return () => query.removeEventListener('change', onChange)
+}
+
+function readReducedMotion(): boolean {
+  if (typeof window === 'undefined' || !window.matchMedia) return false
+  return window.matchMedia(REDUCED_MOTION_QUERY).matches
+}
+
+// The server never knows the reader's preference, so it renders the animated
+// branch and the client corrects on hydration — same shape either way, only
+// the turn's motion differs.
+function usePrefersReducedMotion(): boolean {
+  return useSyncExternalStore(
+    subscribeReducedMotion,
+    readReducedMotion,
+    () => false,
+  )
+}
+
+function padCount(value: number): string {
+  return value < 10 ? `0${value}` : String(value)
+}
+
+function DeckChevron({ direction }: { direction: 'next' | 'prev' }) {
+  return (
+    <svg
+      aria-hidden
+      className="size-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.5"
+      viewBox="0 0 24 24"
+    >
+      <path d={direction === 'prev' ? 'M15 5l-7 7 7 7' : 'M9 5l7 7-7 7'} />
+    </svg>
+  )
+}
+
+const deckControlClass = clsx(
+  'inline-flex size-8 items-center justify-center rounded-full',
+  'border border-border bg-paper text-neutral-7',
+  'transition-[opacity,color,border-color] duration-200',
+  'hover:border-accent/40 hover:text-(--afilmory-accent,--color-accent)',
+)
+
+// Desktop keeps the arrows clear of the photo edge so they read as controls
+// rather than decoration; a phone has no room beside a full-bleed column, so
+// there they move down into the caption row instead.
+function DeckSideArrow({
+  direction,
+  onActivate,
+}: {
+  direction: 'next' | 'prev'
+  onActivate: () => void
+}) {
+  return (
+    <button
+      aria-label={direction === 'prev' ? '上一张' : '下一张'}
+      type="button"
+      className={clsx(
+        deckControlClass,
+        'absolute top-1/2 z-30 hidden -translate-y-1/2 sm:inline-flex',
+        'opacity-0 group-hover/deck:opacity-100 group-focus-within/deck:opacity-100',
+        direction === 'prev' ? 'sm:-left-11' : 'sm:-right-11',
+      )}
+      onClick={onActivate}
+    >
+      <DeckChevron direction={direction} />
+    </button>
+  )
+}
+
+function DeckInlineArrow({
+  direction,
+  onActivate,
+}: {
+  direction: 'next' | 'prev'
+  onActivate: () => void
+}) {
+  return (
+    <button
+      aria-label={direction === 'prev' ? '上一张' : '下一张'}
+      className={clsx(deckControlClass, 'size-7 sm:hidden')}
+      type="button"
+      onClick={onActivate}
+    >
+      <DeckChevron direction={direction} />
+    </button>
+  )
+}
+
+function DeckCard({
   accent,
   baseUrl,
-  tiles,
+  isTop,
+  onNavigate,
+  style,
+  tile,
 }: {
   accent?: string
   baseUrl: string
-  tiles: GalleryTile[]
+  isTop: boolean
+  onNavigate: (event: React.MouseEvent) => void
+  style: React.CSSProperties
+  tile: GalleryTile
 }) {
-  return (
-    <div className="relative overflow-x-auto">
-      <div className="flex gap-1 px-2 pb-2">
-        {tiles.map((tile) => {
-          const { photo } = tile
-          const thumb = photo
-            ? resolveAssetUrl(baseUrl, photo.thumbnailUrl)
-            : undefined
-          const href = buildPhotoDetailHref(baseUrl, tile.id)
-          return (
-            <a
-              className="group/tile relative block h-[220px] shrink-0 overflow-hidden no-underline"
-              href={href}
-              key={tile.id}
-              rel="noopener noreferrer"
-              style={{ aspectRatio: tile.aspect }}
-              target="_blank"
-            >
-              {tile.hash ? (
-                <ImagePlaceholder
-                  accent={accent}
-                  className="absolute inset-0 size-full object-cover"
-                  thumbhash={tile.hash}
-                />
-              ) : null}
-              {thumb ? (
-                <img
-                  alt={photo?.title ?? tile.id}
-                  className="absolute inset-0 size-full object-cover transition-transform duration-300 group-hover/tile:scale-[1.04]"
-                  decoding="async"
-                  draggable={false}
-                  loading="lazy"
-                  src={thumb}
-                  style={{ borderRadius: 0, width: '100%', height: '100%' }}
-                />
-              ) : null}
-              <div className="absolute inset-x-0 bottom-0 flex items-end bg-gradient-to-t from-black/55 to-transparent p-2 opacity-0 transition-opacity group-hover/tile:opacity-100">
-                <span className="font-mono text-[10px] tracking-[0.06em] text-white/90">
-                  {tile.id}
-                </span>
-              </div>
-            </a>
-          )
-        })}
+  const { photo } = tile
+  const thumb = photo ? resolveAssetUrl(baseUrl, photo.thumbnailUrl) : undefined
+  const cardClass = clsx(
+    'group/card absolute inset-0 block bg-paper p-2.5 no-underline will-change-transform sm:p-3',
+    'ring-1 ring-border shadow-[0_4px_24px_rgba(0,0,0,0.05)]',
+    !isTop && 'pointer-events-none',
+  )
+  // The photo well takes the photo's own shape and is centred on the card, so
+  // the mount's margins land wherever the orientation needs them and nothing
+  // is ever cropped.
+  const wellStyle: React.CSSProperties =
+    tile.ratio >= 1
+      ? { aspectRatio: tile.aspect, height: 'auto', width: '100%' }
+      : { aspectRatio: tile.aspect, height: '100%', width: 'auto' }
+
+  const body = (
+    <div className="flex size-full items-center justify-center">
+      <div
+        className="relative overflow-hidden bg-neutral-2"
+        style={wellStyle}
+      >
+        {tile.hash ? (
+          <ImagePlaceholder
+            accent={accent}
+            className="absolute inset-0 size-full object-cover"
+            thumbhash={tile.hash}
+          />
+        ) : null}
+        {thumb ? (
+          <img
+            alt={photo?.title ?? tile.id}
+            className="absolute inset-0 size-full object-cover transition-transform duration-300 group-hover/card:scale-[1.04]"
+            decoding="async"
+            draggable={false}
+            loading="lazy"
+            src={thumb}
+            // Inline sizes on purpose: the preflight `img { height: auto }`
+            // wins over `size-full` in article context, which drops the photo
+            // to its natural height and pins it to the top of the well.
+            style={{ borderRadius: 0, height: '100%', width: '100%' }}
+          />
+        ) : null}
+        {isTop ? (
+          <div
+            className={clsx(
+              'pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 p-3',
+              'bg-gradient-to-t from-black/55 to-transparent',
+              'opacity-0 transition-opacity duration-200 group-hover/card:opacity-100',
+            )}
+          >
+            <span className="truncate font-mono text-[10px] tracking-[0.06em] text-white/90">
+              {photo?.title ?? tile.id}
+            </span>
+            <span className="shrink-0 font-mono text-[9px] tracking-[0.12em] text-white/85">
+              View ↗
+            </span>
+          </div>
+        ) : null}
       </div>
     </div>
+  )
+
+  // A card stops being an anchor the moment it leaves the top slot, so the id
+  // is what identifies it across a turn — for debugging and for tests.
+  if (!isTop) {
+    return (
+      <div
+        aria-hidden
+        className={cardClass}
+        data-photo-id={tile.id}
+        style={style}
+      >
+        {body}
+      </div>
+    )
+  }
+
+  return (
+    <a
+      className={cardClass}
+      data-photo-id={tile.id}
+      href={buildPhotoDetailHref(baseUrl, tile.id)}
+      rel="noopener noreferrer"
+      style={style}
+      target="_blank"
+      onClick={onNavigate}
+    >
+      {body}
+    </a>
+  )
+}
+
+function DeckFooter({
+  caption,
+  index,
+  onNext,
+  onPrev,
+  showArrows,
+  total,
+  viewAllHref,
+}: {
+  caption: string | null
+  index: number
+  onNext: () => void
+  onPrev: () => void
+  showArrows: boolean
+  total: number
+  viewAllHref: string
+}) {
+  return (
+    <div className="mt-4 flex items-center justify-between gap-3 font-mono text-[10px] text-neutral-6">
+      <span className="min-w-0 truncate">{caption}</span>
+      <span className="flex shrink-0 items-center gap-2 sm:gap-3">
+        {showArrows ? (
+          <DeckInlineArrow direction="prev" onActivate={onPrev} />
+        ) : null}
+        <span aria-live="polite">
+          {padCount(index + 1)} / {padCount(total)}
+        </span>
+        {showArrows ? (
+          <DeckInlineArrow direction="next" onActivate={onNext} />
+        ) : null}
+        <span aria-hidden className="h-3 w-px bg-neutral-4" />
+        <a
+          className="inline-flex items-center gap-1 tracking-[0.12em] text-neutral-7 uppercase no-underline transition-colors hover:text-(--afilmory-accent,--color-accent)"
+          href={viewAllHref}
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          <AfilmoryGlyph className="size-[11px]" />
+          All ↗
+        </a>
+      </span>
+    </div>
+  )
+}
+
+function AfilmoryStackView({
+  accent,
+  baseUrl,
+  caption,
+  tiles,
+  title,
+  viewAllHref,
+}: {
+  accent?: string
+  baseUrl: string
+  caption?: string
+  tiles: GalleryTile[]
+  title?: string
+  viewAllHref: string
+}) {
+  const [index, setIndex] = useState(0)
+  const [animation, setAnimation] = useState<DeckAnimation | null>(null)
+  // A swipe ends in a click on the top card's anchor; this suppresses that
+  // navigation so dragging through the deck never opens the gallery.
+  const swipedRef = useRef(false)
+  const pointerStartRef = useRef<number | null>(null)
+  const reducedMotion = usePrefersReducedMotion()
+
+  const total = tiles.length
+  const slots = Math.min(DECK_VISIBLE_CARDS, total)
+  const canTurn = total > 1
+
+  const go = useCallback(
+    (dir: -1 | 1) => {
+      if (!canTurn) return
+      // One turn at a time: interrupting mid-flight would strand the
+      // travelling card between two slots.
+      if (animation) return
+      if (reducedMotion) {
+        setIndex((prev) => wrapIndex(prev + dir, total))
+        return
+      }
+      setAnimation({ dir, phase: 'lift' })
+    },
+    [animation, canTurn, reducedMotion, total],
+  )
+
+  useEffect(() => {
+    if (!animation) return
+    if (animation.phase === 'lift') {
+      const timer = setTimeout(
+        () => setAnimation({ dir: animation.dir, phase: 'settle' }),
+        DECK_LIFT_MS,
+      )
+      return () => clearTimeout(timer)
+    }
+    const timer = setTimeout(() => {
+      setIndex((prev) => wrapIndex(prev + animation.dir, total))
+      setAnimation(null)
+    }, DECK_SETTLE_MS)
+    return () => clearTimeout(timer)
+  }, [animation, total])
+
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault()
+        go(-1)
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault()
+        go(1)
+      }
+    },
+    [go],
+  )
+
+  const handlePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      pointerStartRef.current = event.clientX
+      swipedRef.current = false
+    },
+    [],
+  )
+
+  const handlePointerUp = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const start = pointerStartRef.current
+      pointerStartRef.current = null
+      if (start === null) return
+      const dx = event.clientX - start
+      if (Math.abs(dx) < DECK_SWIPE_THRESHOLD) return
+      swipedRef.current = true
+      go(dx < 0 ? 1 : -1)
+    },
+    [go],
+  )
+
+  const handleNavigate = useCallback((event: React.MouseEvent) => {
+    if (!swipedRef.current) return
+    swipedRef.current = false
+    event.preventDefault()
+  }, [])
+
+  // While a turn is running every card is already laid out at its destination;
+  // committing the index afterwards reproduces exactly the same positions, so
+  // the deck never jumps at the hand-off.
+  const targetIndex = animation ? wrapIndex(index + animation.dir, total) : index
+  const layout = useMemo(
+    () => deckLayout(targetIndex, total, slots),
+    [slots, targetIndex, total],
+  )
+  const travellerIndex = animation
+    ? animation.dir === 1
+      ? index
+      : wrapIndex(index - 1, total)
+    : -1
+
+  const cards = [...layout.entries()]
+    .map(([tileIndex, depth]) => ({ depth, tile: tiles[tileIndex]!, tileIndex }))
+    // Back to front, so the readable card is last in the DOM as well as on top.
+    .sort((a, b) => b.depth - a.depth)
+
+  const styleFor = (tileIndex: number, depth: number): React.CSSProperties => {
+    if (tileIndex !== travellerIndex || !animation) {
+      return {
+        transform: depthTransform(depth),
+        transition: `transform ${DECK_LIFT_MS + DECK_SETTLE_MS}ms ${DECK_SETTLE_EASE}`,
+        zIndex: DECK_VISIBLE_CARDS + 1 - depth,
+      }
+    }
+    // The traveller rides above the stack on the leg that touches the top slot
+    // and slips underneath on the leg that touches the back — which is why
+    // forward and backward read as the same motion played either way.
+    const nearTop = animation.dir === 1 ? animation.phase === 'lift' : animation.phase === 'settle'
+    const lifting = animation.phase === 'lift'
+    return {
+      transform: lifting ? DECK_ASIDE_TRANSFORM : depthTransform(depth),
+      transition: lifting
+        ? `transform ${DECK_LIFT_MS}ms ${DECK_LIFT_EASE}`
+        : `transform ${DECK_SETTLE_MS}ms ${DECK_SETTLE_EASE}`,
+      zIndex: nearTop ? DECK_VISIBLE_CARDS + 2 : 0,
+    }
+  }
+
+  const current = tiles[index]
+  const footerCaption = current
+    ? (caption ??
+      current.photo?.title ??
+      formatCameraLine(current.photo?.exif) ??
+      current.id)
+    : (caption ?? null)
+
+  return (
+    <figure
+      className="not-prose mx-auto my-8 w-full max-w-[480px] font-sans"
+      style={frameStyle(accent)}
+    >
+      {title ? (
+        <figcaption className="mb-3 text-sm leading-tight font-medium text-neutral-9">
+          {title}
+        </figcaption>
+      ) : null}
+      <div
+        aria-roledescription="carousel"
+        className="group/deck relative pb-8"
+        role="group"
+        tabIndex={0}
+        onKeyDown={handleKeyDown}
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerUp}
+      >
+        <div className="relative w-full" style={{ aspectRatio: DECK_CARD_RATIO }}>
+          {cards.map(({ depth, tile, tileIndex }) => (
+            <DeckCard
+              accent={accent}
+              baseUrl={baseUrl}
+              isTop={depth === 0}
+              key={tile.id}
+              style={styleFor(tileIndex, depth)}
+              tile={tile}
+              onNavigate={handleNavigate}
+            />
+          ))}
+        </div>
+        {canTurn ? (
+          <>
+            <DeckSideArrow direction="prev" onActivate={() => go(-1)} />
+            <DeckSideArrow direction="next" onActivate={() => go(1)} />
+          </>
+        ) : null}
+      </div>
+      <DeckFooter
+        caption={footerCaption}
+        index={index}
+        showArrows={canTurn}
+        total={total}
+        viewAllHref={viewAllHref}
+        onNext={() => go(1)}
+        onPrev={() => go(-1)}
+      />
+    </figure>
+  )
+}
+
+function DeckSkeleton({ accent }: { accent?: string }) {
+  return (
+    <figure
+      className="not-prose mx-auto my-8 w-full max-w-[480px] font-sans"
+      style={frameStyle(accent)}
+    >
+      <div className="relative pb-8">
+        <div className="relative w-full" style={{ aspectRatio: DECK_CARD_RATIO }}>
+          {DECK_DEPTH_TRANSFORMS.map((transform, depth) => (
+            <div
+              className="absolute inset-0 animate-pulse bg-neutral-3 ring-1 ring-border"
+              key={transform}
+              style={{ transform, zIndex: DECK_VISIBLE_CARDS - depth }}
+            />
+          ))}
+        </div>
+      </div>
+    </figure>
   )
 }
 
@@ -610,17 +1114,16 @@ function PhotoCollectionBody({
   layout: AfilmoryLayout
   tiles: GalleryTile[]
 }) {
-  if (layout === 'carousel') {
-    return <CarouselRow accent={accent} baseUrl={baseUrl} tiles={tiles} />
-  }
+  const variant = layout === 'masonry' ? 'masonry' : 'grid'
   return (
-    <div className={clsx('p-2', gridClassFor(layout))}>
+    <div className={clsx('p-2', collectionBodyClassFor(layout))}>
       {tiles.map((tile) => (
         <PhotoTile
           accent={accent}
           baseUrl={baseUrl}
           key={tile.id}
           tile={tile}
+          variant={variant}
         />
       ))}
     </div>
@@ -655,12 +1158,12 @@ function SkeletonGrid({
     height: SKELETON_HEIGHTS[i % SKELETON_HEIGHTS.length]!,
     key: `skel-${i}`,
   }))
-  if (layout === 'carousel') {
+  if (layout !== 'masonry') {
     return (
-      <div className="flex gap-1 overflow-hidden px-2 pb-2">
+      <div className={clsx('p-2', collectionBodyClassFor(layout))}>
         {slots.map((s) => (
           <div
-            className="h-[220px] w-[300px] shrink-0 animate-pulse bg-neutral-3 dark:bg-neutral-3"
+            className="aspect-square w-full animate-pulse bg-neutral-3"
             key={s.key}
           />
         ))}
@@ -668,12 +1171,12 @@ function SkeletonGrid({
     )
   }
   return (
-    <div className={clsx('p-2', gridClassFor(layout))}>
+    <div className={clsx('p-2', collectionBodyClassFor(layout))}>
       {slots.map((s) => (
         <div
           key={s.key}
           className={clsx(
-            'mb-1 w-full animate-pulse bg-neutral-3 break-inside-avoid dark:bg-neutral-3',
+            'mb-1 w-full animate-pulse bg-neutral-3 break-inside-avoid',
             s.height,
           )}
         />
@@ -706,6 +1209,45 @@ function AfilmoryGalleryView({
     source.kind === 'filter'
       ? buildFilterHref(baseUrl, source.filter)
       : `${baseUrl.replace(/\/$/, '')}/`
+
+  // The deck is deliberately unframed: a header bar plus a ring around a
+  // tilted stack of prints fights the stack's own edges. Its footer carries
+  // the counter and the "view all" link the frame used to hold.
+  if (layout === 'carousel') {
+    if (tiles.length > 0) {
+      return (
+        <AfilmoryStackView
+          accent={accent}
+          baseUrl={baseUrl}
+          caption={caption}
+          tiles={tiles}
+          title={title}
+          viewAllHref={viewAllHref}
+        />
+      )
+    }
+    if (isLoading) {
+      return <DeckSkeleton accent={accent} />
+    }
+    return (
+      <figure
+        className="not-prose mx-auto my-8 w-full max-w-[480px] font-sans"
+        style={frameStyle(accent)}
+      >
+        <div className="ring-1 ring-border">
+          <StateBlock
+            message={
+              isError
+                ? error instanceof Error
+                  ? error.message
+                  : 'Photos fetch failed'
+                : 'No photos matched'
+            }
+          />
+        </div>
+      </figure>
+    )
+  }
 
   if (tiles.length === 0 && isLoading) {
     return (
