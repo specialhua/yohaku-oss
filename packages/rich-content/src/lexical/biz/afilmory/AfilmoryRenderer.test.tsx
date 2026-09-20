@@ -56,7 +56,8 @@ function deckProps(layout: AfilmorySlotProps['layout']): AfilmorySlotProps {
   }
 }
 
-const TURN_MS = 400
+// Comfortably longer than a full turn, including the trailing tilt.
+const TURN_MS = 700
 
 let mountEl: HTMLDivElement
 let root: Root
@@ -76,8 +77,16 @@ function cardById(id: string): HTMLElement {
   return mountEl.querySelector<HTMLElement>(`[data-photo-id="${id}"]`)!
 }
 
+// Every card is an anchor so its DOM node survives a turn; the readable one
+// is the only card left in the a11y tree.
+function topCard(): HTMLElement {
+  return mountEl.querySelector<HTMLElement>(
+    '[data-photo-id]:not([aria-hidden="true"])',
+  )!
+}
+
 function topHref(): string {
-  return mountEl.querySelector('a[href*="/photos/"]')!.getAttribute('href')!
+  return topCard().getAttribute('href')!
 }
 
 function clickArrow(label: '上一张' | '下一张') {
@@ -147,8 +156,15 @@ it('stacks the photos and advances to the next card', async () => {
   await mountDeck()
 
   expect(mountEl.textContent).toContain('01 / 03')
-  // Only the top card is a link; the ones behind are inert.
-  expect(mountEl.querySelectorAll('a[href*="/photos/"]')).toHaveLength(1)
+  // Exactly one card is reachable; the ones behind are inert but still
+  // anchors, so their nodes survive a turn instead of being recreated.
+  expect(
+    mountEl.querySelectorAll('[data-photo-id]:not([aria-hidden="true"])'),
+  ).toHaveLength(1)
+  expect(
+    [...mountEl.querySelectorAll<HTMLElement>('[data-photo-id][aria-hidden]')]
+      .every((card) => card.tabIndex === -1),
+  ).toBe(true)
   expect(topHref()).toContain('/photos/a')
 
   await clickArrow('下一张')
@@ -213,6 +229,33 @@ it('sends the travelling card over the stack, then under it', async () => {
   expect(Number(cardById('a').style.zIndex)).toBeLessThan(
     Number(cardById('b').style.zIndex),
   )
+})
+
+it('never reorders the cards in the DOM while turning', async () => {
+  await mountDeck()
+
+  const snapshot = () =>
+    [...mountEl.querySelectorAll<HTMLElement>('[data-photo-id]')].map((el) => ({
+      el,
+      id: el.dataset.photoId!,
+    }))
+
+  const before = snapshot()
+
+  await clickArrow('下一张')
+  const during = snapshot()
+
+  // Moving a node resets its running transition, which is what turned the
+  // lift leg into a jump. Surviving cards must be the same nodes, in the same
+  // relative order — stacking is zIndex's job, not the DOM's.
+  const survivors = before.filter((card) => during.some((d) => d.el === card.el))
+  expect(survivors.length).toBeGreaterThan(1)
+  expect(during.filter((d) => survivors.some((s) => s.el === d.el))).toEqual(
+    survivors,
+  )
+
+  // And the card being flown is one of those survivors, not a remount.
+  expect(survivors.map((card) => card.id)).toContain('a')
 })
 
 it('mirrors the motion when turning backwards', async () => {

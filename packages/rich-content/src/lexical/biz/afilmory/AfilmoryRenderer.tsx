@@ -577,35 +577,64 @@ const DECK_SWIPE_THRESHOLD = 40
 // showing around the photo is the mount, not wasted space.
 const DECK_CARD_RATIO = 1
 
+// Placement and tilt are kept apart because they ride different elements and
+// different clocks: paper lands flat a moment after it lands in place, and a
+// card whose slide and rotation stop on the same frame reads as plastic.
+interface DeckPlacement {
+  rotate: number
+  scale: number
+  x: string
+  y: string
+}
+
 // Offsets alternate sides so the stack reads as letters dropped on a desk
 // rather than a machine-squared deck of playing cards.
-const DECK_DEPTH_TRANSFORMS = [
-  'translate(0px, 0px) rotate(0deg) scale(1)',
-  'translate(-7px, 9px) rotate(1.5deg) scale(0.972)',
-  'translate(6px, 18px) rotate(-1.7deg) scale(0.945)',
-  'translate(-4px, 26px) rotate(0.9deg) scale(0.92)',
+const DECK_DEPTHS: DeckPlacement[] = [
+  { rotate: 0, scale: 1, x: '0px', y: '0px' },
+  { rotate: 1.5, scale: 0.972, x: '-7px', y: '9px' },
+  { rotate: -1.7, scale: 0.945, x: '6px', y: '18px' },
+  { rotate: 0.9, scale: 0.92, x: '-4px', y: '26px' },
 ]
 
 // The waypoint the travelling card passes through: lifted off the stack and
 // swung out to the left. Forward runs depth-0 → aside → back; backward runs
 // the same path in reverse, so the two directions mirror each other exactly.
-const DECK_ASIDE_TRANSFORM = 'translate(-20%, -9%) rotate(-6deg) scale(1.02)'
+const DECK_ASIDE: DeckPlacement = {
+  rotate: -6,
+  scale: 1.02,
+  x: '-20%',
+  y: '-9%',
+}
+
+// Uniform scale commutes with rotate, so splitting the single
+// `translate rotate scale` across two nested elements lands in the same place.
+function placementTransform(placement: DeckPlacement): string {
+  return `translate(${placement.x}, ${placement.y}) scale(${placement.scale})`
+}
+
+function tiltTransform(placement: DeckPlacement): string {
+  return `rotate(${placement.rotate}deg)`
+}
 
 // The lift used to run 150ms on a front-loaded curve, which spent ~70% of the
 // travel in the first three frames and read as a jump rather than a glide.
 const DECK_LIFT_MS = 240
-const DECK_SETTLE_MS = 200
+// The drop had the same problem: a front-loaded curve over 200ms snapped into
+// the slot. Paper eases in, gathers speed, then gets caught by the air.
+const DECK_SETTLE_MS = 340
+// How long after the card lands in place its tilt keeps settling.
+const DECK_TILT_LAG_MS = 90
 const DECK_LIFT_EASE = 'cubic-bezier(0.33, 0, 0.2, 1)'
-const DECK_SETTLE_EASE = 'cubic-bezier(0.32, 0.72, 0, 1)'
+const DECK_SETTLE_EASE = 'cubic-bezier(0.37, 0.01, 0.18, 1)'
+const DECK_TILT_EASE = 'cubic-bezier(0.22, 0.61, 0.36, 1)'
 
 interface DeckAnimation {
   dir: -1 | 1
   phase: 'lift' | 'settle'
 }
 
-function depthTransform(depth: number): string {
-  const slot = Math.min(depth, DECK_DEPTH_TRANSFORMS.length - 1)
-  return DECK_DEPTH_TRANSFORMS[slot]!
+function depthPlacement(depth: number): DeckPlacement {
+  return DECK_DEPTHS[Math.min(depth, DECK_DEPTHS.length - 1)]!
 }
 
 function wrapIndex(value: number, total: number): number {
@@ -734,24 +763,32 @@ function DeckInlineArrow({
 function DeckCard({
   accent,
   baseUrl,
+  inner,
   isTop,
   onNavigate,
-  style,
+  outer,
   tile,
 }: {
   accent?: string
   baseUrl: string
+  inner: React.CSSProperties
   isTop: boolean
   onNavigate: (event: React.MouseEvent) => void
-  style: React.CSSProperties
+  outer: React.CSSProperties
   tile: GalleryTile
 }) {
   const { photo } = tile
   const thumb = photo ? resolveAssetUrl(baseUrl, photo.thumbnailUrl) : undefined
+  // Outer element slides and scales, inner one tilts. The paper itself — edge,
+  // shadow, mount — belongs to the tilting layer so the whole sheet turns with
+  // it rather than the photo rotating inside a static frame.
   const cardClass = clsx(
-    'group/card absolute inset-0 block bg-paper p-2.5 no-underline will-change-transform sm:p-3',
-    'ring-1 ring-border shadow-[0_4px_24px_rgba(0,0,0,0.05)]',
+    'group/card absolute inset-0 block no-underline will-change-transform',
     !isTop && 'pointer-events-none',
+  )
+  const sheetClass = clsx(
+    'size-full bg-paper p-2.5 sm:p-3',
+    'ring-1 ring-border shadow-[0_4px_24px_rgba(0,0,0,0.05)]',
   )
   // The photo well takes the photo's own shape and is centred on the card, so
   // the mount's margins land wherever the orientation needs them and nothing
@@ -808,32 +845,27 @@ function DeckCard({
     </div>
   )
 
-  // A card stops being an anchor the moment it leaves the top slot, so the id
-  // is what identifies it across a turn — for debugging and for tests.
-  if (!isTop) {
-    return (
-      <div
-        aria-hidden
-        className={cardClass}
-        data-photo-id={tile.id}
-        style={style}
-      >
-        {body}
-      </div>
-    )
-  }
-
+  // Always an anchor, even when buried. Swapping the element type as a card
+  // leaves the top slot makes React drop and recreate the node, and a
+  // recreated node cannot continue the transition it was in the middle of —
+  // that is the other half of why the lift used to snap. Cards behind are
+  // inert instead: no pointer events, no tab stop, hidden from the a11y tree.
+  const buried = !isTop
   return (
     <a
+      aria-hidden={buried || undefined}
       className={cardClass}
       data-photo-id={tile.id}
       href={buildPhotoDetailHref(baseUrl, tile.id)}
       rel="noopener noreferrer"
-      style={style}
+      style={outer}
+      tabIndex={buried ? -1 : undefined}
       target="_blank"
       onClick={onNavigate}
     >
-      {body}
+      <div className={sheetClass} style={inner}>
+        {body}
+      </div>
     </a>
   )
 }
@@ -937,7 +969,7 @@ function AfilmoryStackView({
     const timer = setTimeout(() => {
       setIndex((prev) => wrapIndex(prev + animation.dir, total))
       setAnimation(null)
-    }, DECK_SETTLE_MS)
+    }, DECK_SETTLE_MS + DECK_TILT_LAG_MS)
     return () => clearTimeout(timer)
   }, [animation, total])
 
@@ -995,17 +1027,33 @@ function AfilmoryStackView({
       : wrapIndex(index - 1, total)
     : -1
 
+  // Ordered by photo, never by depth. Moving a DOM node resets whatever
+  // transition it is running, and a depth-ordered list reshuffles the moment a
+  // turn starts — which silently swallowed the whole lift leg and made the top
+  // card snap aside instead of gliding. Stacking comes from zIndex alone, so
+  // this order only has to stay stable: across a turn the window shifts by one
+  // photo, which adds and drops an entry at the ends without moving the rest.
   const cards = [...layout.entries()]
     .map(([tileIndex, depth]) => ({ depth, tile: tiles[tileIndex]!, tileIndex }))
-    // Back to front, so the readable card is last in the DOM as well as on top.
-    .sort((a, b) => b.depth - a.depth)
+    .sort((a, b) => a.tileIndex - b.tileIndex)
 
-  const styleFor = (tileIndex: number, depth: number): React.CSSProperties => {
+  const styleFor = (
+    tileIndex: number,
+    depth: number,
+  ): { inner: React.CSSProperties, outer: React.CSSProperties } => {
     if (tileIndex !== travellerIndex || !animation) {
+      const resting = depthPlacement(depth)
+      const duration = DECK_LIFT_MS + DECK_SETTLE_MS
       return {
-        transform: depthTransform(depth),
-        transition: `transform ${DECK_LIFT_MS + DECK_SETTLE_MS}ms ${DECK_SETTLE_EASE}`,
-        zIndex: DECK_VISIBLE_CARDS + 1 - depth,
+        inner: {
+          transform: tiltTransform(resting),
+          transition: `transform ${duration + DECK_TILT_LAG_MS}ms ${DECK_TILT_EASE}`,
+        },
+        outer: {
+          transform: placementTransform(resting),
+          transition: `transform ${duration}ms ${DECK_SETTLE_EASE}`,
+          zIndex: DECK_VISIBLE_CARDS + 1 - depth,
+        },
       }
     }
     // The traveller rides above the stack on the leg that touches the top slot
@@ -1013,12 +1061,22 @@ function AfilmoryStackView({
     // forward and backward read as the same motion played either way.
     const nearTop = animation.dir === 1 ? animation.phase === 'lift' : animation.phase === 'settle'
     const lifting = animation.phase === 'lift'
+    const target = lifting ? DECK_ASIDE : depthPlacement(depth)
+    // Only the drop lets the tilt trail the slide; on the way up the corner
+    // and the card leave the stack together.
+    const tiltMs = lifting ? DECK_LIFT_MS : DECK_SETTLE_MS + DECK_TILT_LAG_MS
     return {
-      transform: lifting ? DECK_ASIDE_TRANSFORM : depthTransform(depth),
-      transition: lifting
-        ? `transform ${DECK_LIFT_MS}ms ${DECK_LIFT_EASE}`
-        : `transform ${DECK_SETTLE_MS}ms ${DECK_SETTLE_EASE}`,
-      zIndex: nearTop ? DECK_VISIBLE_CARDS + 2 : 0,
+      inner: {
+        transform: tiltTransform(target),
+        transition: `transform ${tiltMs}ms ${lifting ? DECK_LIFT_EASE : DECK_TILT_EASE}`,
+      },
+      outer: {
+        transform: placementTransform(target),
+        transition: lifting
+          ? `transform ${DECK_LIFT_MS}ms ${DECK_LIFT_EASE}`
+          : `transform ${DECK_SETTLE_MS}ms ${DECK_SETTLE_EASE}`,
+        zIndex: nearTop ? DECK_VISIBLE_CARDS + 2 : 0,
+      },
     }
   }
 
@@ -1056,9 +1114,9 @@ function AfilmoryStackView({
               baseUrl={baseUrl}
               isTop={depth === 0}
               key={tile.id}
-              style={styleFor(tileIndex, depth)}
               tile={tile}
               onNavigate={handleNavigate}
+              {...styleFor(tileIndex, depth)}
             />
           ))}
         </div>
@@ -1090,11 +1148,14 @@ function DeckSkeleton({ accent }: { accent?: string }) {
     >
       <div className="relative pb-8">
         <div className="relative w-full" style={{ aspectRatio: DECK_CARD_RATIO }}>
-          {DECK_DEPTH_TRANSFORMS.map((transform, depth) => (
+          {DECK_DEPTHS.map((placement, depth) => (
             <div
               className="absolute inset-0 animate-pulse bg-neutral-3 ring-1 ring-border"
-              key={transform}
-              style={{ transform, zIndex: DECK_VISIBLE_CARDS - depth }}
+              key={placement.y}
+              style={{
+                transform: `${placementTransform(placement)} ${tiltTransform(placement)}`,
+                zIndex: DECK_VISIBLE_CARDS - depth,
+              }}
             />
           ))}
         </div>
