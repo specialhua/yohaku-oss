@@ -13,6 +13,15 @@ const BASE_URL = 'https://gallery.example.com'
 
 function photo(id: string, width: number, height: number): AfilmoryManifestPhoto {
   return {
+    exif: {
+      ExposureTime: 0.004,
+      FNumber: 2.8,
+      FocalLength: '18.3 mm',
+      ISO: 400,
+      LensModel: '18.3mm',
+      Make: 'RICOH IMAGING COMPANY, LTD.',
+      Model: 'RICOH GR III',
+    },
     height,
     id,
     originalUrl: `${BASE_URL}/original/${id}`,
@@ -27,7 +36,18 @@ const PHOTOS = [photo('a', 3000, 2000), photo('b', 2000, 3000), photo('c', 3000,
 function hostWithPhotos(): HostCapabilities {
   return {
     apiBase: 'https://example.com/api',
-    fetchJSON: async () => PHOTOS as never,
+    // Mirrors the real API's two shapes: a single photo by id, an array for
+    // the batch endpoint. Returning the array for both hid a crash in the
+    // single-photo path.
+    fetchJSON: async (url: string) => {
+      const byId = /\/api\/manifest\/photos\/([^/?]+)$/.exec(url)
+      if (byId) {
+        return PHOTOS.find(
+          (item) => item.id === decodeURIComponent(byId[1]!),
+        ) as never
+      }
+      return PHOTOS as never
+    },
     labels: {
       codeCopied: '',
       codeCopy: '',
@@ -99,6 +119,13 @@ function clickArrow(label: '上一张' | '下一张') {
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
+  // The lightbox streams the original to report real progress; unstubbed it
+  // would hit the network. Rejecting drives the documented fallback: hand the
+  // URL straight to <img> and show a spinner instead of a fake percentage.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(() => Promise.reject(new Error('offline'))),
+  )
   __resetResourceCache()
   mountEl = document.createElement('div')
   document.body.append(mountEl)
@@ -108,8 +135,28 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount())
   mountEl.remove()
+  vi.unstubAllGlobals()
   vi.useRealTimers()
 })
+
+async function mountSingle() {
+  await act(async () => {
+    root.render(
+      <HostProvider host={hostWithPhotos()}>
+        <AfilmoryRenderer
+          baseUrl={BASE_URL}
+          source={{
+            items: [{ h: PHOTOS[0]!.height, id: 'a', w: PHOTOS[0]!.width }],
+            kind: 'list',
+          }}
+        />
+      </HostProvider>,
+    )
+  })
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+}
 
 async function mountDeck(layout: AfilmorySlotProps['layout'] = 'carousel') {
   await act(async () => {
@@ -309,6 +356,213 @@ it('fills the well so a photo is not pinned to its top edge', async () => {
   const img = mountEl.querySelector<HTMLImageElement>('img')!
   expect(img.style.height).toBe('100%')
   expect(img.style.width).toBe('100%')
+})
+
+async function openLightbox() {
+  await act(async () => {
+    topCard().dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true }),
+    )
+  })
+  // Let the original-image request settle so the <img> has its src.
+  await act(async () => {
+    await Promise.resolve()
+  })
+}
+
+function lightbox(): HTMLElement | null {
+  return document.body.querySelector<HTMLElement>('[role="dialog"]')
+}
+
+it('opens the photo in place instead of leaving for the gallery', async () => {
+  await mountDeck()
+  expect(lightbox()).toBeNull()
+
+  await openLightbox()
+
+  const dialog = lightbox()!
+  expect(dialog).not.toBeNull()
+  // The original, not the thumbnail, is what the reader came for.
+  expect(
+    [...dialog.querySelectorAll('img')].map((img) => img.getAttribute('src')),
+  ).toContain(`${BASE_URL}/original/a`)
+  // The gallery is still reachable, just demoted to an explicit link.
+  expect(dialog.querySelector('a[href*="/photos/a"]')).not.toBeNull()
+})
+
+it('reads the four exif stats off the manifest', async () => {
+  await mountDeck()
+  await openLightbox()
+
+  const text = lightbox()!.textContent!
+  expect(text).toContain('f/2.8')
+  expect(text).toContain('1/250s')
+  expect(text).toContain('400')
+  expect(text).toContain('18.3mm')
+  expect(text).toContain('RICOH IMAGING COMPANY, LTD. RICOH GR III')
+})
+
+it('lets a modified click still open the gallery in a new tab', async () => {
+  await mountDeck()
+
+  const event = new MouseEvent('click', {
+    bubbles: true,
+    cancelable: true,
+    metaKey: true,
+  })
+  await act(async () => topCard().dispatchEvent(event))
+
+  expect(event.defaultPrevented).toBe(false)
+  expect(lightbox()).toBeNull()
+})
+
+it('closes on Escape', async () => {
+  await mountDeck()
+  await openLightbox()
+
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+  })
+  expect(lightbox()).toBeNull()
+})
+
+it('leaves turning photos to the deck rather than duplicating it', async () => {
+  await mountDeck()
+  await openLightbox()
+
+  const dialog = lightbox()!
+  expect(dialog.querySelector('button[aria-label="下一张"]')).toBeNull()
+  expect(dialog.querySelector('button[aria-label="上一张"]')).toBeNull()
+
+  // Arrow keys must not quietly swap the photo behind the reader's back.
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
+  })
+  expect(
+    [...lightbox()!.querySelectorAll('img')].map((img) => img.getAttribute('src')),
+  ).toContain(`${BASE_URL}/original/a`)
+})
+
+it('reports real download progress and never claims 100% early', async () => {
+  // A response that hands over half the bytes, then the rest on demand.
+  const chunk = new Uint8Array(50)
+  let releaseSecond: (() => void) | undefined
+  const gate = new Promise<void>((resolve) => {
+    releaseSecond = resolve
+  })
+  let reads = 0
+
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({
+      body: {
+        getReader: () => ({
+          cancel: async () => {},
+          read: async () => {
+            reads += 1
+            if (reads === 1) return { done: false, value: chunk }
+            await gate
+            if (reads === 2) return { done: false, value: chunk }
+            return { done: true, value: undefined }
+          },
+        }),
+      },
+      headers: new Headers({ 'content-length': '100', 'content-type': 'image/jpeg' }),
+      ok: true,
+    })),
+  )
+  vi.stubGlobal('URL', {
+    ...URL,
+    createObjectURL: () => 'blob:original',
+    revokeObjectURL: () => {},
+  })
+
+  await mountDeck()
+  await openLightbox()
+
+  // Half the bytes in: a real 50%, and the photo is not on screen yet.
+  expect(lightbox()!.textContent).toContain('加载中 50%')
+
+  await act(async () => {
+    releaseSecond?.()
+    await Promise.resolve()
+  })
+  await act(async () => {
+    await Promise.resolve()
+  })
+
+  // All bytes in, but the counter holds at 99 until the image itself decodes.
+  const img = [...lightbox()!.querySelectorAll('img')].find(
+    (node) => node.getAttribute('src') === 'blob:original',
+  )!
+  expect(img).toBeTruthy()
+  expect(lightbox()!.textContent).not.toContain('100%')
+
+  await act(async () => {
+    img.dispatchEvent(new Event('load'))
+  })
+  expect(lightbox()!.textContent).not.toContain('加载中')
+})
+
+it('falls back to a spinner when progress cannot be measured', async () => {
+  await mountDeck()
+  await openLightbox()
+
+  const text = lightbox()!.textContent!
+  expect(text).toContain('加载中')
+  // No invented percentage when the byte count is unavailable.
+  expect(text).not.toMatch(/加载中\s*\d+%/)
+})
+
+it('restores page scrolling when it closes', async () => {
+  await mountDeck()
+  await openLightbox()
+  expect(document.body.style.overflow).toBe('hidden')
+
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+  })
+  expect(document.body.style.overflow).not.toBe('hidden')
+})
+
+it('opens a single photo in the lightbox too, not off to the gallery', async () => {
+  await mountSingle()
+  expect(lightbox()).toBeNull()
+
+  const card = mountEl.querySelector<HTMLAnchorElement>('a[href*="/photos/a"]')!
+  const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+  await act(async () => {
+    card.dispatchEvent(event)
+  })
+  await act(async () => {
+    await Promise.resolve()
+  })
+
+  expect(event.defaultPrevented).toBe(true)
+  expect(lightbox()).not.toBeNull()
+  expect(lightbox()!.textContent).toContain('f/2.8')
+})
+
+it('keeps the lightbox out of the single photo\'s anchor', async () => {
+  await mountSingle()
+
+  const card = mountEl.querySelector<HTMLAnchorElement>('a[href*="/photos/a"]')!
+  await act(async () => {
+    card.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+  })
+  await act(async () => {
+    await Promise.resolve()
+  })
+
+  // React bubbles synthetic events through the component tree, so a portal
+  // nested inside the anchor would send this click back into the anchor's
+  // handler and swallow the gallery link.
+  const cta = lightbox()!.querySelector<HTMLAnchorElement>('a[href*="/photos/a"]')!
+  const ctaClick = new MouseEvent('click', { bubbles: true, cancelable: true })
+  await act(async () => {
+    cta.dispatchEvent(ctaClick)
+  })
+  expect(ctaClick.defaultPrevented).toBe(false)
 })
 
 it('renders grid as a real grid, not another multi-column flow', async () => {

@@ -16,6 +16,8 @@ import {
   AfilmoryGlyph,
   buildFilterHref,
   buildPhotoDetailHref,
+  formatCameraLine,
+  formatShutter,
   resolveAssetUrl,
 } from './_shared'
 import type {
@@ -24,6 +26,7 @@ import type {
   AfilmorySlotProps,
   AfilmorySource,
 } from './afilmory-augment'
+import { AfilmoryLightbox } from './afilmory-lightbox'
 import type {
   AfilmoryManifestPhoto,
   AfilmoryManifestPhotoExif,
@@ -79,32 +82,7 @@ function getDisplayAspect(photo: AfilmoryManifestPhoto): string {
   return aspectFromDims(photo.width, photo.height)
 }
 
-function formatShutter(s: string | number | undefined | null): string | null {
-  if (s === undefined || s === null || s === '') return null
-  if (typeof s === 'number') {
-    if (!Number.isFinite(s)) return null
-    return s >= 1 ? `${s}s` : `1/${Math.round(1 / s)}s`
-  }
-  const str = String(s)
-  if (str.includes('/')) return `${str}s`
-  const n = Number(str)
-  if (!Number.isFinite(n)) return str
-  return n >= 1 ? `${n}s` : `1/${Math.round(1 / n)}s`
-}
 
-function formatCameraLine(
-  exif: AfilmoryManifestPhotoExif | undefined,
-): string | null {
-  if (!exif) return null
-  const camera = [exif.Make, exif.Model]
-    .filter(Boolean)
-    .map((s) => s!.trim())
-    .filter(Boolean)
-    .join(' ')
-  const lens = exif.LensModel?.trim()
-  const parts = [camera, lens].filter((p): p is string => Boolean(p))
-  return parts.length > 0 ? parts.join(' · ') : null
-}
 
 function formatExifParams(
   exif: AfilmoryManifestPhotoExif | undefined,
@@ -147,11 +125,13 @@ function PolaroidShell({
   asLink,
   children,
   href,
+  onNavigate,
 }: {
   accent?: string
   asLink: boolean
   children: React.ReactNode
   href?: string
+  onNavigate?: (event: React.MouseEvent) => void
 }) {
   const style = accent
     ? ({ '--afilmory-accent': accent } as React.CSSProperties)
@@ -164,6 +144,7 @@ function PolaroidShell({
         rel="noopener noreferrer"
         style={style}
         target="_blank"
+        onClick={onNavigate}
       >
         {children}
       </a>
@@ -261,6 +242,7 @@ function AfilmoryPolaroidView({
   const { id } = item
   const aspectRatio = aspectFromDims(item.w, item.h)
   const detailHref = buildPhotoDetailHref(baseUrl, id)
+  const [lightboxOpen, setLightboxOpen] = useState(false)
 
   const {
     data: photo,
@@ -268,6 +250,22 @@ function AfilmoryPolaroidView({
     isError,
     isLoading,
   } = useAfilmoryPhotoDirect(baseUrl, id)
+
+  const handleNavigate = useCallback(
+    (event: React.MouseEvent) => {
+      // Same bargain as the deck: a modified click still opens the gallery,
+      // and an unresolved photo falls back to following the link.
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return
+      }
+      if (!photo) return
+      event.preventDefault()
+      setLightboxOpen(true)
+    },
+    [photo],
+  )
+
+  const closeLightbox = useCallback(() => setLightboxOpen(false), [])
 
   if (isError) {
     const hint =
@@ -295,7 +293,13 @@ function AfilmoryPolaroidView({
     : undefined
 
   return (
-    <PolaroidShell asLink accent={accent} href={detailHref}>
+    <>
+      <PolaroidShell
+        asLink
+        accent={accent}
+        href={detailHref}
+        onNavigate={handleNavigate}
+      >
       <div
         className="relative w-full overflow-hidden bg-neutral-1 dark:bg-neutral-1"
         style={{ aspectRatio }}
@@ -334,8 +338,20 @@ function AfilmoryPolaroidView({
           paramsLine={paramsLine}
         />
       </div>
-      <PolaroidFootStatic watermark caption={staticCap} />
-    </PolaroidShell>
+        <PolaroidFootStatic watermark caption={staticCap} />
+      </PolaroidShell>
+      {/* Outside the anchor on purpose: React bubbles synthetic events through
+          the component tree, so a portal nested inside the link would route
+          every click in the lightbox back into the link's own handler. */}
+      {lightboxOpen && photo && thumbnailSrc ? (
+        <AfilmoryLightbox
+          detailHref={detailHref}
+          photo={photo}
+          thumbnailSrc={thumbnailSrc}
+          onClose={closeLightbox}
+        />
+      ) : null}
+    </>
   )
 }
 
@@ -932,6 +948,7 @@ function AfilmoryStackView({
 }) {
   const [index, setIndex] = useState(0)
   const [animation, setAnimation] = useState<DeckAnimation | null>(null)
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
   // A swipe ends in a click on the top card's anchor; this suppresses that
   // navigation so dragging through the deck never opens the gallery.
   const swipedRef = useRef(false)
@@ -1007,10 +1024,33 @@ function AfilmoryStackView({
     [go],
   )
 
-  const handleNavigate = useCallback((event: React.MouseEvent) => {
-    if (!swipedRef.current) return
-    swipedRef.current = false
-    event.preventDefault()
+  const handleNavigate = useCallback(
+    (event: React.MouseEvent) => {
+      if (swipedRef.current) {
+        swipedRef.current = false
+        event.preventDefault()
+        return
+      }
+      // A modified click is a deliberate "open the gallery elsewhere"; leave
+      // the anchor alone so the browser handles it as any other link.
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return
+      }
+      // Until the photo's metadata has arrived there is nothing to show in the
+      // caption panel, so the anchor stays a plain link to the gallery.
+      if (!tiles[index]?.photo) return
+      event.preventDefault()
+      setLightboxIndex(index)
+    },
+    [index, tiles],
+  )
+
+  const closeLightbox = useCallback(() => {
+    // Leave the deck showing whatever the reader ended on.
+    setLightboxIndex((prev) => {
+      if (prev !== null) setIndex(prev)
+      return null
+    })
   }, [])
 
   // While a turn is running every card is already laid out at its destination;
@@ -1080,6 +1120,7 @@ function AfilmoryStackView({
     }
   }
 
+  const lightboxTile = lightboxIndex === null ? undefined : tiles[lightboxIndex]
   const current = tiles[index]
   const footerCaption = current
     ? (caption ??
@@ -1136,6 +1177,17 @@ function AfilmoryStackView({
         onNext={() => go(1)}
         onPrev={() => go(-1)}
       />
+      {lightboxTile?.photo ? (
+        // Turning photos stays the deck's job; the lightbox is only ever about
+        // the one photo the reader wanted a closer look at.
+        <AfilmoryLightbox
+          detailHref={buildPhotoDetailHref(baseUrl, lightboxTile.id)}
+          key={lightboxTile.id}
+          photo={lightboxTile.photo}
+          thumbnailSrc={resolveAssetUrl(baseUrl, lightboxTile.photo.thumbnailUrl)}
+          onClose={closeLightbox}
+        />
+      ) : null}
     </figure>
   )
 }

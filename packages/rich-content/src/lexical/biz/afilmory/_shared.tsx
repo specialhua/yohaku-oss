@@ -1,4 +1,33 @@
 import type { AfilmoryFilter } from './afilmory-augment'
+import type { AfilmoryManifestPhotoExif } from './use-afilmory-manifest'
+
+export function formatShutter(s: string | number | undefined | null): string | null {
+  if (s === undefined || s === null || s === '') return null
+  if (typeof s === 'number') {
+    if (!Number.isFinite(s)) return null
+    return s >= 1 ? `${s}s` : `1/${Math.round(1 / s)}s`
+  }
+  const str = String(s)
+  if (str.includes('/')) return `${str}s`
+  const n = Number(str)
+  if (!Number.isFinite(n)) return str
+  return n >= 1 ? `${n}s` : `1/${Math.round(1 / n)}s`
+}
+
+export function formatCameraLine(
+  exif: AfilmoryManifestPhotoExif | undefined,
+): string | null {
+  if (!exif) return null
+  const camera = [exif.Make, exif.Model]
+    .filter(Boolean)
+    .map((s) => s!.trim())
+    .filter(Boolean)
+    .join(' ')
+  const lens = exif.LensModel?.trim()
+  const parts = [camera, lens].filter((p): p is string => Boolean(p))
+  return parts.length > 0 ? parts.join(' · ') : null
+}
+
 
 export function isAbsoluteUrl(url: string): boolean {
   return /^https?:\/\//i.test(url) || url.startsWith('//')
