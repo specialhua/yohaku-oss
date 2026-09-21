@@ -504,6 +504,16 @@ it('reports real download progress and never claims 100% early', async () => {
   expect(lightbox()!.textContent).not.toContain('加载中')
 })
 
+it('does not promote the zoom layer to its own compositing layer', async () => {
+  await mountDeck()
+  await openLightbox()
+
+  // A promoted layer is rasterised once at layout size and then stretched, so
+  // zooming would enlarge pixels rather than reveal the original's detail.
+  const layer = lightbox()!.querySelector<HTMLElement>('.origin-top-left')!
+  expect(layer.className).not.toContain('will-change')
+})
+
 it('falls back to a spinner when progress cannot be measured', async () => {
   await mountDeck()
   await openLightbox()

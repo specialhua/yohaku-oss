@@ -4,7 +4,7 @@ import clsx from 'clsx'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
-import { AfilmoryGlyph, formatCameraLine, formatShutter } from './_shared'
+import { formatCameraLine, formatShutter } from './_shared'
 import type { AfilmoryManifestPhoto } from './use-afilmory-manifest'
 
 interface ExifStat {
@@ -379,9 +379,12 @@ export function AfilmoryLightbox({
   // Width is driven by every limit at once — a width cap, the viewport, and
   // the height budget folded back through the aspect ratio — so the paper
   // hugs the photo exactly instead of letterboxing it.
+  // Portrait is height-bound and landscape width-bound, so each is pushed
+  // against the edges it can actually reach. The mount is only wide enough to
+  // read as paper, not to frame the photo.
   const photoClass = besideOnDesktop
-    ? 'w-[min(90vw,calc(58vh*var(--r)))] sm:w-[min(calc(88vw-300px),calc(78vh*var(--r)))]'
-    : 'w-[min(90vw,1080px,calc((86vh-190px)*var(--r)))]'
+    ? 'w-[min(94vw,calc((72vh-60px)*var(--r)))] sm:w-[min(calc(95vw-250px),calc((94vh-20px)*var(--r)))]'
+    : 'w-[min(94vw,calc((80vh-80px)*var(--r)))] sm:w-[min(95vw,1800px,calc((94vh-140px)*var(--r)))]'
 
   const originalSrc =
     original.kind === 'ready'
@@ -395,7 +398,7 @@ export function AfilmoryLightbox({
   return createPortal(
     <div
       aria-modal
-      className="fixed inset-0 z-[999] flex items-center justify-center bg-black/80 p-4 backdrop-blur-[2px]"
+      className="fixed inset-0 z-[999] flex items-center justify-center bg-black/80 p-2 backdrop-blur-[2px] sm:p-3"
       ref={dialogRef}
       role="dialog"
       tabIndex={-1}
@@ -422,9 +425,9 @@ export function AfilmoryLightbox({
 
       <figure
         className={clsx(
-          'not-prose m-0 flex max-h-full max-w-full flex-col gap-3 bg-paper p-3 font-sans',
-          'shadow-[0_4px_24px_rgba(0,0,0,0.05)] ring-1 ring-border',
-          besideOnDesktop && 'sm:flex-row sm:gap-4',
+          'not-prose m-0 flex max-h-full max-w-full flex-col gap-2 bg-paper p-1.5 font-sans sm:gap-3 sm:p-2',
+          'ring-1 ring-border',
+          besideOnDesktop && 'sm:flex-row',
         )}
         onClick={(event) => event.stopPropagation()}
       >
@@ -447,8 +450,13 @@ export function AfilmoryLightbox({
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
         >
+          {/* No will-change here on purpose: promoting this to its own
+              compositing layer makes the browser rasterise it once at layout
+              size and stretch that bitmap, so zooming shows enlarged pixels
+              instead of the original's detail — most visibly on phones, whose
+              compositors are the laziest about re-rastering. */}
           <div
-            className="absolute inset-0 origin-top-left will-change-transform"
+            className="absolute inset-0 origin-top-left"
             style={{
               transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.scale})`,
             }}
@@ -508,17 +516,19 @@ export function AfilmoryLightbox({
         <aside
           className={clsx(
             'flex min-w-0 flex-col justify-between',
-            besideOnDesktop ? 'sm:w-[280px] sm:shrink-0' : 'w-full',
+            besideOnDesktop ? 'sm:w-[240px] sm:shrink-0' : 'w-full',
           )}
         >
-          <div className="min-w-0">
+          {/* A phone has too little room to spend on readings nobody zoomed in
+              for; there the panel is just the way through to the gallery. */}
+          <div className="hidden min-w-0 sm:block">
             {photo.title && (
-              <div className="truncate font-serif text-[15px] leading-tight font-medium text-neutral-10">
+              <div className="truncate font-serif text-[13px] leading-tight font-medium text-neutral-10">
                 {photo.title}
               </div>
             )}
             {cameraLine && (
-              <div className="mt-1 font-mono text-[11px] leading-[1.7] text-neutral-7">
+              <div className="mt-0.5 font-mono text-[10px] leading-[1.6] text-neutral-7">
                 {cameraLine}
               </div>
             )}
@@ -527,19 +537,19 @@ export function AfilmoryLightbox({
           {stats.length > 0 && (
             <div
               className={clsx(
-                'mt-3 grid border-y-[0.5px] border-neutral-4',
-                besideOnDesktop ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-4',
+                'mt-2 hidden border-y-[0.5px] border-neutral-4 sm:grid',
+                besideOnDesktop ? 'grid-cols-2' : 'grid-cols-4',
               )}
             >
               {stats.map((stat) => (
                 <div
-                  className="border-r-[0.5px] border-b-[0.5px] border-neutral-4 px-3 py-2.5 last:border-r-0"
+                  className="border-r-[0.5px] border-b-[0.5px] border-neutral-4 px-2.5 py-1.5 last:border-r-0"
                   key={stat.label}
                 >
-                  <p className="m-0 font-serif text-[20px] leading-none font-medium text-neutral-10 tabular-nums">
+                  <p className="m-0 font-serif text-[15px] leading-none font-medium text-neutral-10 tabular-nums">
                     {stat.value}
                   </p>
-                  <p className="m-0 mt-1.5 font-mono text-[10px] tracking-[0.08em] text-neutral-7 uppercase">
+                  <p className="m-0 mt-1 font-mono text-[8px] tracking-[0.08em] text-neutral-7 uppercase">
                     {stat.label}
                   </p>
                 </div>
@@ -548,24 +558,30 @@ export function AfilmoryLightbox({
           )}
 
           <a
+            className="group/cta mt-2 flex items-baseline gap-2 no-underline"
             href={detailHref}
             rel="noopener noreferrer"
             target="_blank"
-            className={clsx(
-              'mt-3 flex items-center justify-between gap-2 rounded-md px-3 py-2.5 no-underline',
-              'border border-accent/25 bg-accent/8 text-(--afilmory-accent,--color-accent)',
-              'transition-colors duration-200 hover:border-accent/45 hover:bg-accent/12',
-            )}
           >
-            <span className="inline-flex items-center gap-2">
-              <AfilmoryGlyph className="size-[13px]" />
-              <span className="text-[12px] font-medium">
-                移步 Afilmory 相册查看更多信息
-              </span>
+            <span className="font-serif leading-none text-neutral-10 transition-colors group-hover/cta:text-(--afilmory-accent,--color-accent)">
+              <span className="text-[24px]">V</span>
+              <span className="text-[14px]">iew</span>
             </span>
-            <span aria-hidden className="font-mono text-[11px]">
-              ↗
+            <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-7 underline decoration-neutral-4 underline-offset-4 transition-colors group-hover/cta:text-neutral-9 group-hover/cta:decoration-neutral-6">
+              移步 Afilmory 相册查看更多信息
             </span>
+            <svg
+              aria-hidden
+              className="size-3 shrink-0 self-center text-neutral-6 transition-transform group-hover/cta:-translate-y-px group-hover/cta:translate-x-px"
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="1.5"
+              viewBox="0 0 24 24"
+            >
+              <path d="M7 17L17 7M9 7h8v8" />
+            </svg>
           </a>
         </aside>
       </figure>
