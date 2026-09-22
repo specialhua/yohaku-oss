@@ -63,3 +63,26 @@ it('settles even when the catalog cannot be fetched, so the renderer reports the
   })
   expect(settled()).toBe(true)
 })
+
+it('falls through after a timeout when the catalog request never lands', async () => {
+  vi.useFakeTimers()
+  try {
+    const { setDynamicCatalogHost, useDynamicCatalogSettled } =
+      await loadCatalog()
+
+    const fetchJSON = vi.fn(
+      () => new Promise(() => {}),
+    ) as unknown as HostCapabilities['fetchJSON']
+    setDynamicCatalogHost({ fetchJSON } as HostCapabilities)
+
+    const settled = await renderSettledProbe(useDynamicCatalogSettled)
+    expect(settled()).toBe(false)
+
+    await act(async () => {
+      vi.advanceTimersByTime(3000)
+    })
+    expect(settled()).toBe(true)
+  } finally {
+    vi.useRealTimers()
+  }
+})

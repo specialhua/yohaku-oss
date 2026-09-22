@@ -23,13 +23,31 @@ let catalogPromise: Promise<void> | null = null
 let settled = false
 const listeners = new Set<() => void>()
 
+// A catalog request that never lands (hung connection, missing snippet route)
+// would otherwise park the renderer on a blank placeholder with nothing to act
+// on. Falling through restores the old behaviour: the check runs, fails, and
+// the renderer offers its retry.
+const SETTLE_TIMEOUT_MS = 3000
+let settleTimer: ReturnType<typeof setTimeout> | null = null
+
 function markSettled() {
+  if (settled) return
   settled = true
+  if (settleTimer) {
+    clearTimeout(settleTimer)
+    settleTimer = null
+  }
   for (const listener of listeners) listener()
+}
+
+function armSettleTimeout() {
+  if (settled || settleTimer) return
+  settleTimer = setTimeout(markSettled, SETTLE_TIMEOUT_MS)
 }
 
 export function setDynamicCatalogHost(host: HostCapabilities) {
   bridge.fetchJSON = host.fetchJSON
+  armSettleTimeout()
   void ensureDynamicCatalog()
 }
 
@@ -52,6 +70,7 @@ function ensureDynamicCatalog(): Promise<void> {
 
 function subscribe(listener: () => void) {
   listeners.add(listener)
+  armSettleTimeout()
   void ensureDynamicCatalog()
   return () => {
     listeners.delete(listener)
