@@ -434,7 +434,7 @@ export function AfilmoryLightbox({
         <div
           ref={frameRef}
           className={clsx(
-            'relative shrink-0 touch-none overflow-hidden bg-neutral-2',
+            'relative shrink-0 touch-none overflow-hidden bg-neutral-2 select-none',
             photoClass,
             zoomed ? 'cursor-grab active:cursor-grabbing' : 'cursor-zoom-in',
           )}
@@ -445,10 +445,16 @@ export function AfilmoryLightbox({
             } as React.CSSProperties
           }
           onDoubleClick={handleDoubleClick}
+          // A second click is the browser's cue to start a selection, which
+          // otherwise flashes the whole photo highlighted on every zoom.
+          // Dragging runs on pointer events, so nothing here needs the default.
           onPointerCancel={handlePointerUp}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
+          onMouseDown={(event) => {
+            if (event.detail > 1) event.preventDefault()
+          }}
         >
           {/* No will-change here on purpose: promoting this to its own
               compositing layer makes the browser rasterise it once at layout

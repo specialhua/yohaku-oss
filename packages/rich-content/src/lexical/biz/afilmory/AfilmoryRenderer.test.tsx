@@ -575,6 +575,74 @@ it('keeps the lightbox out of the single photo\'s anchor', async () => {
   expect(ctaClick.defaultPrevented).toBe(false)
 })
 
+it.each(['grid', 'masonry'] as const)(
+  'opens %s tiles in the lightbox like every other afilmory surface',
+  async (layout) => {
+    await mountDeck(layout)
+    expect(lightbox()).toBeNull()
+
+    const tile = mountEl.querySelector<HTMLAnchorElement>('a[href*="/photos/b"]')!
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+    await act(async () => {
+      tile.dispatchEvent(event)
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(
+      [...lightbox()!.querySelectorAll('img')].map((img) =>
+        img.getAttribute('src'),
+      ),
+    ).toContain(`${BASE_URL}/original/b`)
+  },
+)
+
+it('lets a modified click on a tile still reach the gallery', async () => {
+  await mountDeck('grid')
+
+  const tile = mountEl.querySelector<HTMLAnchorElement>('a[href*="/photos/b"]')!
+  const event = new MouseEvent('click', {
+    bubbles: true,
+    cancelable: true,
+    metaKey: true,
+  })
+  await act(async () => {
+    tile.dispatchEvent(event)
+  })
+
+  expect(event.defaultPrevented).toBe(false)
+  expect(lightbox()).toBeNull()
+})
+
+it('suppresses the browser selection a double click would start', async () => {
+  await mountDeck()
+  await openLightbox()
+
+  const frame = lightbox()!.querySelector<HTMLElement>('.select-none')!
+  const second = new MouseEvent('mousedown', {
+    bubbles: true,
+    cancelable: true,
+    detail: 2,
+  })
+  await act(async () => {
+    frame.dispatchEvent(second)
+  })
+  expect(second.defaultPrevented).toBe(true)
+
+  // A first click must still behave normally — panning depends on it.
+  const first = new MouseEvent('mousedown', {
+    bubbles: true,
+    cancelable: true,
+    detail: 1,
+  })
+  await act(async () => {
+    frame.dispatchEvent(first)
+  })
+  expect(first.defaultPrevented).toBe(false)
+})
+
 it('renders grid as a real grid, not another multi-column flow', async () => {
   await mountDeck('grid')
   expect(mountEl.querySelector('.grid-cols-2')).not.toBeNull()

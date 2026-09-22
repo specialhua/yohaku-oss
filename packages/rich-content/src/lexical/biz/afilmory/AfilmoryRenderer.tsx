@@ -520,11 +520,13 @@ function collectionBodyClassFor(layout: AfilmoryLayout): string {
 function PhotoTile({
   accent,
   baseUrl,
+  onOpen,
   tile,
   variant,
 }: {
   accent?: string
   baseUrl: string
+  onOpen: (tile: GalleryTile, event: React.MouseEvent) => void
   tile: GalleryTile
   variant: 'grid' | 'masonry'
 }) {
@@ -544,6 +546,7 @@ function PhotoTile({
           ? 'mb-1 break-inside-avoid'
           : 'aspect-square',
       )}
+      onClick={(event) => onOpen(tile, event)}
     >
       {tile.hash ? (
         <ImagePlaceholder
@@ -1220,11 +1223,13 @@ function PhotoCollectionBody({
   accent,
   baseUrl,
   layout,
+  onOpen,
   tiles,
 }: {
   accent?: string
   baseUrl: string
   layout: AfilmoryLayout
+  onOpen: (tile: GalleryTile, event: React.MouseEvent) => void
   tiles: GalleryTile[]
 }) {
   const variant = layout === 'masonry' ? 'masonry' : 'grid'
@@ -1237,6 +1242,7 @@ function PhotoCollectionBody({
           key={tile.id}
           tile={tile}
           variant={variant}
+          onOpen={onOpen}
         />
       ))}
     </div>
@@ -1307,6 +1313,7 @@ function AfilmoryGalleryView({
   source,
   title,
 }: AfilmorySlotProps) {
+  const [lightboxId, setLightboxId] = useState<string | null>(null)
   const { error, isError, isLoading, photos } = useCollectionPhotos(
     baseUrl,
     source,
@@ -1322,6 +1329,16 @@ function AfilmoryGalleryView({
     source.kind === 'filter'
       ? buildFilterHref(baseUrl, source.filter)
       : `${baseUrl.replace(/\/$/, '')}/`
+
+  // Same bargain every afilmory surface makes: a plain click opens the photo
+  // where the reader already is, a modified click still goes to the gallery,
+  // and an unresolved photo falls back to following the link.
+  const handleOpen = (tile: GalleryTile, event: React.MouseEvent) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    if (!tile.photo) return
+    event.preventDefault()
+    setLightboxId(tile.id)
+  }
 
   // The deck is deliberately unframed: a header bar plus a ring around a
   // tilted stack of prints fights the stack's own edges. Its footer carries
@@ -1413,6 +1430,11 @@ function AfilmoryGalleryView({
     )
   }
 
+  const lightboxPhoto =
+    lightboxId === null
+      ? undefined
+      : tiles.find((tile) => tile.id === lightboxId)?.photo
+
   return (
     <figure className={frameOuterClass} style={frameStyle(accent)}>
       <CollectionHeader
@@ -1426,11 +1448,24 @@ function AfilmoryGalleryView({
         baseUrl={baseUrl}
         layout={layout}
         tiles={tiles}
+        onOpen={handleOpen}
       />
       {caption ? (
         <figcaption className="px-5 pt-2 pb-3 text-sm text-neutral-7">
           {caption}
         </figcaption>
+      ) : null}
+      {/* A sibling of the tiles, never a child of one: React bubbles synthetic
+          events through the component tree, so a portal nested inside a tile's
+          anchor would route the lightbox's own clicks back into that link. */}
+      {lightboxPhoto ? (
+        <AfilmoryLightbox
+          detailHref={buildPhotoDetailHref(baseUrl, lightboxPhoto.id)}
+          key={lightboxPhoto.id}
+          photo={lightboxPhoto}
+          thumbnailSrc={resolveAssetUrl(baseUrl, lightboxPhoto.thumbnailUrl)}
+          onClose={() => setLightboxId(null)}
+        />
       ) : null}
     </figure>
   )
