@@ -59,6 +59,7 @@ import { BlockBoundary } from './block-boundary'
 import {
   configuredDynamicModule,
   setDynamicCatalogHost,
+  useDynamicCatalogSettled,
 } from './dynamic-catalog'
 import {
   CodeBlockOverride,
@@ -215,8 +216,30 @@ function withPrintRenderers(
   }
 }
 
+// The dynamic renderer checks its URL against the catalog on its first effect,
+// which runs before the catalog has been fetched. Hold the renderer back until
+// the catalog settles so a valid widget isn't reported as a load failure.
+function withCatalogGate(module: RichRendererModule): RichRendererModule {
+  if (!module.renderers) return module
+  return {
+    ...module,
+    renderers: Object.fromEntries(
+      Object.entries(module.renderers).map(([key, Comp]) => {
+        const Renderer = Comp as ComponentType<{ initialHeight?: number }>
+        function DynamicCatalogGate(props: { initialHeight?: number }) {
+          const settled = useDynamicCatalogSettled()
+          if (!settled)
+            return <div style={{ minHeight: props.initialHeight ?? 320 }} />
+          return <Renderer {...props} />
+        }
+        return [key, DynamicCatalogGate]
+      }),
+    ),
+  }
+}
+
 const modules: RichRendererModule[] = [
-  withPrintRenderers('dynamic', configuredDynamicModule),
+  withPrintRenderers('dynamic', withCatalogGate(configuredDynamicModule)),
   withPrintRenderers('embed', yohakuEmbedModule),
   configuredNestedDocModule,
   staticExcalidrawModule,
