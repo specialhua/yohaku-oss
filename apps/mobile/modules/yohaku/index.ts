@@ -179,6 +179,7 @@ export const NavigationHeaderTitle: ComponentType<NavigationHeaderTitleProps> =
   requireNativeViewManager('Yohaku', 'NavigationHeaderTitle')
 
 type SettingsAvatarProps = ViewProps & {
+  active?: boolean
   collapseDistance?: number
   imageUri: string
   ringColor?: string
@@ -186,6 +187,28 @@ type SettingsAvatarProps = ViewProps & {
 
 export const SettingsAvatar: ComponentType<SettingsAvatarProps> =
   requireNativeViewManager('Yohaku', 'SettingsAvatar')
+
+type YohakuPagerProps = ViewProps & {
+  page?: number
+  onPageScroll?: (event: NativeSyntheticEvent<{ progress: number }>) => void
+  onPageSelected?: (event: NativeSyntheticEvent<{ page: number }>) => void
+}
+
+export const YohakuPager: ComponentType<YohakuPagerProps> =
+  requireNativeViewManager('Yohaku', 'YohakuPager')
+
+type YohakuStudyShellProps = ViewProps & {
+  accountImageUri?: string
+  collapseDistance?: number
+  ownerImageUri?: string
+  page?: number
+  ringColor?: string
+  onPageScroll?: (event: NativeSyntheticEvent<{ progress: number }>) => void
+  onPageSelected?: (event: NativeSyntheticEvent<{ page: number }>) => void
+}
+
+export const YohakuStudyShell: ComponentType<YohakuStudyShellProps> =
+  requireNativeViewManager('Yohaku', 'YohakuStudyShell')
 
 export type NavigationHeaderMenuItem = {
   category?: string
@@ -258,6 +281,9 @@ export type YohakuNoteHeroSpec = {
 }
 
 type YohakuNoteHeroHostProps = ViewProps & {
+  nativeTopBlurHeight?: number
+  nativeTopBlurReadabilityColor?: ColorValue
+  nativeTopBlurForegroundColor?: ColorValue
   noteHeroRole?: 'list' | 'detail'
   noteHeroContentInsetTop?: number
   noteHeroCoverPlaceholderUri?: string | null
@@ -272,6 +298,9 @@ type YohakuNoteHeroHostProps = ViewProps & {
 
 export const YohakuNoteHeroHost: ComponentType<YohakuNoteHeroHostProps> =
   requireNativeViewManager('Yohaku', 'YohakuNoteHeroHost')
+
+export const YohakuScrollAttachment: ComponentType<ViewProps> =
+  requireNativeViewManager('Yohaku', 'YohakuScrollAttachment')
 
 type YohakuStretchCoverHostProps = ViewProps & {
   stretchCoverAnchorY?: number
