@@ -4,7 +4,12 @@ import type { BuiltinNodeRenderer } from '@haklex/rich-compose'
 import type { CodeBlockRenderer } from '@haklex/rich-compose/modules/code-block'
 import { semanticClassNames, sharedStyles } from '@haklex/rich-editor/styles'
 import clsx from 'clsx'
-import { type ComponentProps, isValidElement, type ReactNode } from 'react'
+import {
+  type ComponentProps,
+  Fragment,
+  isValidElement,
+  type ReactNode,
+} from 'react'
 
 import { useHost } from '../host'
 import { PortableCodeBlock } from './portable/code-block'
@@ -83,9 +88,14 @@ export const lexicalParagraphOverride: BuiltinNodeRenderer = (
   children,
   defaultRenderer,
 ) => {
-  const n = node as { children?: Array<{ type?: string }> }
+  const n = node as {
+    children?: Array<{ type?: string; isUnlinked?: boolean }>
+  }
   const only = n.children?.length === 1 ? n.children[0] : null
-  if (only && (only.type === 'autolink' || only.type === 'link')) {
+  if (
+    only &&
+    ((only.type === 'autolink' && !only.isUnlinked) || only.type === 'link')
+  ) {
     const child = Array.isArray(children) ? children[0] : null
     const childProps = isValidElement(child)
       ? (child.props as { href?: unknown; children?: unknown })
@@ -144,7 +154,10 @@ export const lexicalAutolinkOverride: BuiltinNodeRenderer = (
   children,
   defaultRenderer,
 ) => {
-  const n = node as { url?: string }
+  const n = node as { url?: string; isUnlinked?: boolean }
+  // Unlinked in the editor: the node stays so autolink won't re-match, but it
+  // should read as plain text.
+  if (n.isUnlinked) return <Fragment key={key}>{children}</Fragment>
   if (!n.url) return defaultRenderer()
   return (
     <InlineLinkRenderer href={n.url} key={key} rel="noopener" target="_blank">

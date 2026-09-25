@@ -114,6 +114,66 @@ it('forwards the link-card node fallback into a provided BlockLinkCard slot', ()
   expect(afterMarker).toContain('href="https://link-card.example.com"')
 })
 
+it('renders an autolink unlinked in the editor as plain text, not a link or card', () => {
+  const text = (value: string) => ({
+    detail: 0,
+    format: 0,
+    mode: 'normal',
+    style: '',
+    text: value,
+    type: 'text',
+    version: 1,
+  })
+  const unlinked = (url: string) => ({
+    children: [text(url)],
+    direction: null,
+    format: '',
+    indent: 0,
+    isUnlinked: true,
+    rel: null,
+    target: null,
+    title: null,
+    type: 'autolink',
+    url,
+    version: 1,
+  })
+  const paragraph = (children: unknown[]) => ({
+    children,
+    direction: null,
+    format: '',
+    indent: 0,
+    textFormat: 0,
+    textStyle: '',
+    type: 'paragraph',
+    version: 1,
+  })
+  const state = sanitizeEditorState(
+    {
+      root: {
+        children: [
+          paragraph([unlinked('https://alone.example.com')]),
+          paragraph([text('see '), unlinked('https://inline.example.com')]),
+        ],
+        direction: null,
+        format: '',
+        indent: 0,
+        type: 'root',
+        version: 1,
+      },
+    } as never,
+    REGISTERED_NODE_TYPES,
+  )
+  const html = renderToStaticMarkup(
+    <HostProvider host={webLikeHost}>
+      <RichContent theme="light" value={state} variant="article" />
+    </HostProvider>,
+  )
+  expect(html).toContain('https://alone.example.com')
+  expect(html).toContain('https://inline.example.com')
+  expect(html).not.toContain('data-block-link-card-slot')
+  expect(html).not.toContain('href=')
+})
+
 // I-1: usePortablePollAdapter used to have zero call sites, so a host with no
 // PollDataProvider of its own (mobile) always fell to PollStaticFallback —
 // question + bare labels, no tallies, no vote affordance. The SSR fixture
