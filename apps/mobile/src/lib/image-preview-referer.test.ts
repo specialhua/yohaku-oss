@@ -12,19 +12,19 @@ describe('gallery site Referer', () => {
       path.join(srcRoot, 'lib/image-cache.ts'),
       'utf8',
     )
-    const articleBody = readFileSync(
-      path.join(srcRoot, 'screens/details/article-body.tsx'),
+    const imageBlock = readFileSync(
+      path.join(srcRoot, 'rich/blocks/image-block.tsx'),
       'utf8',
     )
-    const host = readFileSync(
-      path.join(srcRoot, 'components/dom/webview-host.ts'),
+    const remoteImage = readFileSync(
+      path.join(srcRoot, 'components/ui/remote-image.tsx'),
       'utf8',
     )
     const engine = readFileSync(path.join(srcRoot, 'sync/engine.ts'), 'utf8')
 
     expect(imageCache).toContain('siteReferer?: string')
-    expect(articleBody).toContain('siteReferer: getSiteUrl()')
-    expect(host).toContain('postNativeImagePreview(payload, deps.webOrigin)')
+    expect(imageBlock).toContain('siteReferer={getSiteUrl()}')
+    expect(remoteImage).toContain('siteReferer={siteReferer}')
     expect(engine).toContain('prefetchImages([...new Set(urls)], getSiteUrl())')
   })
 })

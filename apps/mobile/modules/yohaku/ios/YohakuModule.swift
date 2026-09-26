@@ -63,6 +63,20 @@ public class YohakuModule: Module {
       ]
     }
 
+    AsyncFunction("rasterizeSvg") { (payload: SvgRasterPayload) -> [String: Any] in
+      let rendered = try await SvgRasterDomain.render(
+        svg: payload.svg,
+        width: payload.width,
+        height: payload.height,
+        bg: payload.bg
+      )
+      return [
+        "height": rendered.height,
+        "uri": rendered.uri,
+        "width": rendered.width,
+      ]
+    }
+
     AsyncFunction("renderMermaid") { (payload: MermaidRenderPayload) -> [String: Any] in
       let rendered = try await MermaidDomain.render(
         source: payload.source,
@@ -74,6 +88,10 @@ public class YohakuModule: Module {
         "uri": rendered.uri,
         "width": rendered.width,
       ]
+    }
+
+    AsyncFunction("printRichDocument") { (payload: [String: Any]) -> String in
+      await RichPrintDomain.run(payload)
     }
 
     Function("databaseBytes") { () -> Double in
@@ -252,6 +270,132 @@ public class YohakuModule: Module {
       }
     }
 
+    View(YohakuVideoView.self) {
+      ViewName("YohakuVideo")
+
+      Events("onNaturalSize")
+
+      Prop("src") { (view: YohakuVideoView, value: String) in
+        view.setSrc(value)
+      }
+
+      Prop("backdropColor") { (view: YohakuVideoView, color: UIColor?) in
+        view.setBackdropColor(color)
+      }
+
+      Prop("poster") { (view: YohakuVideoView, value: String?) in
+        view.setPoster(value)
+      }
+
+      Prop("loop") { (view: YohakuVideoView, value: Bool?) in
+        view.setLoop(value ?? false)
+      }
+    }
+
+    View(YohakuTrackMapView.self) {
+      ViewName("YohakuTrackMap")
+
+      Events("onNativePress")
+
+      Prop("polylines") { (view: YohakuTrackMapView, value: [[[Double]]]) in
+        view.setPolylines(value)
+      }
+
+      Prop("accentColor") { (view: YohakuTrackMapView, color: UIColor?) in
+        view.setAccentColor(color)
+      }
+
+      Prop("paperColor") { (view: YohakuTrackMapView, color: UIColor?) in
+        view.setPaperColor(color)
+      }
+
+      Prop("interactive") { (view: YohakuTrackMapView, value: Bool) in
+        view.setInteractive(value)
+      }
+    }
+
+    View(YohakuWebEmbedView.self) {
+      ViewName("YohakuWebEmbed")
+      Events("onContentHeight", "onEmbedError", "onEmbedLink")
+
+      Prop("url") { (view: YohakuWebEmbedView, value: String) in
+        view.url = value
+      }
+
+      Prop("props") { (view: YohakuWebEmbedView, value: [String: Any]) in
+        view.props = value
+      }
+
+      Prop("theme") { (view: YohakuWebEmbedView, value: String) in
+        view.theme = value
+      }
+
+      Prop("initialHeight") { (view: YohakuWebEmbedView, value: Double) in
+        view.initialHeight = value
+      }
+
+      Prop("baseUrl") { (view: YohakuWebEmbedView, value: String) in
+        view.baseUrl = value
+      }
+
+      OnViewDidUpdateProps { view in
+        view.update()
+      }
+    }
+
+    View(YohakuMathView.self) {
+      ViewName("YohakuMath")
+      Events("onContentSize", "onMathError")
+
+      Prop("latex") { (view: YohakuMathView, value: String) in
+        view.latex = value
+      }
+
+      Prop("fontSize") { (view: YohakuMathView, value: Double) in
+        view.fontSize = CGFloat(value)
+      }
+
+      Prop("color") { (view: YohakuMathView, value: UIColor?) in
+        view.color = value ?? .label
+      }
+
+      OnViewDidUpdateProps { view in
+        view.update()
+      }
+    }
+
+    View(YohakuKlineView.self) {
+      ViewName("YohakuKline")
+
+      Prop("bars") { (view: YohakuKlineView, value: [KlineBar]) in
+        view.setBars(value)
+      }
+
+      Prop("ema") { (view: YohakuKlineView, value: [KlineEma]) in
+        view.setEma(value)
+      }
+
+      Prop("upColor") { (view: YohakuKlineView, color: UIColor?) in
+        view.setUpColor(color)
+      }
+
+      Prop("downColor") { (view: YohakuKlineView, color: UIColor?) in
+        view.setDownColor(color)
+      }
+
+      Prop("gridColor") { (view: YohakuKlineView, color: UIColor?) in
+        view.setGridColor(color)
+      }
+
+      Prop("labelColor") { (view: YohakuKlineView, color: UIColor?) in
+        view.setLabelColor(color)
+      }
+
+      Prop("volumeColor") { (view: YohakuKlineView, color: UIColor?) in
+        view.setVolumeColor(color)
+      }
+    }
+
     View(YohakuStudyShellView.self) {
       ViewName("YohakuStudyShell")
 
@@ -359,10 +503,32 @@ public class YohakuModule: Module {
       }
     }
 
+    View(RichTextView.self) {
+      ViewName("RichText")
+
+      Events("onMenuAction", "onLinkPress", "onHighlightPress", "onContentHeight", "onBlockRects", "onSelectionActive")
+
+      Prop("blocks") { (view: RichTextView, blocks: [[String: Any]]) in
+        view.setBlocks(blocks)
+      }
+
+      Prop("highlights") { (view: RichTextView, highlights: [[String: Any]]) in
+        view.setHighlights(highlights)
+      }
+
+      Prop("menuItems") { (view: RichTextView, items: [[String: Any]]) in
+        view.setMenuItems(items)
+      }
+
+      Prop("typography") { (view: RichTextView, typography: [String: Any]) in
+        view.setTypography(typography)
+      }
+    }
+
     View(GroupedListView.self) {
       ViewName("GroupedList")
 
-      Events("onRowPress", "onNativeHeight")
+      Events("onRowPress", "onRowMenuAction", "onNativeMetrics")
 
       Prop("rows") { (view: GroupedListView, rows: [GroupedListRowSpec]) in
         view.setRows(rows)

@@ -24,7 +24,6 @@ import { useTranslations } from '@/i18n'
 import { fonts } from '@/theme/fonts'
 import { usePalette } from '@/theme/palette'
 
-import { FileNodeLab } from './file-node-lab'
 import { SplashReplayControls, useSplashReplay } from './splash-replay'
 
 function Section({
@@ -128,11 +127,11 @@ export function DevDemos() {
     <View style={styles.screen}>
       <GalleryClose />
       <EdgeEffectScrollView
+        style={[styles.screen, { backgroundColor: palette.surface.desk }]}
         contentContainerStyle={[
           styles.content,
           { paddingTop: insets.top + 44 },
         ]}
-        style={[styles.screen, { backgroundColor: palette.surface.desk }]}
       >
         <AppText variant="largeTitle">组件目录</AppText>
         <AppText style={styles.intro} variant="secondary">
@@ -246,6 +245,21 @@ export function DevDemos() {
           </Paper>
         </Section>
 
+        <Section title="RICH TEXT">
+          <LabEntry
+            chevronColor={palette.neutral[5]}
+            hint="原生 UITextView 正文：跨段落选取、编辑菜单、高亮"
+            href="/dev-demos/rich-text"
+            title="原生正文 POC"
+          />
+          <LabEntry
+            chevronColor={palette.neutral[5]}
+            hint="生产文章 lexical JSON 经 haklex override 渲染成原生 segments"
+            href="/dev-demos/rich-document"
+            title="原生文档"
+          />
+        </Section>
+
         <Section title="MARKDOWN">
           <LabEntry
             chevronColor={palette.neutral[5]}
@@ -253,10 +267,6 @@ export function DevDemos() {
             href="/dev-demos/markdown"
             title="评论正文渲染"
           />
-        </Section>
-
-        <Section title="FILE NODE">
-          <FileNodeLab />
         </Section>
 
         <Section title="SPLASH">

@@ -204,7 +204,7 @@ export interface ApiEnrichment {
   category?: string
   color?: string
   description?: string
-  image?: ApiEnrichmentImage
+  previewImage?: ApiEnrichmentImage
   publishedAt?: string
   subtype?: string
   thumbnailImage?: ApiEnrichmentImage
@@ -268,4 +268,32 @@ export interface ApiPushActivation {
   bindingId: string
   enabled: true
   relayUrl: string
+}
+
+export interface ApiStockBar {
+  close: number
+  high: number
+  low: number
+  open: number
+  timestamp: number
+  volume?: number
+}
+
+export interface ApiStockBars {
+  bars: ApiStockBar[]
+  meta: {
+    exchange?: string
+    longName?: string
+    symbol: string
+  }
+}
+
+export interface ApiPollState {
+  canVote: boolean
+  closed: boolean
+  errorMessage?: string
+  status: 'ready' | 'error'
+  tallies: Record<string, number>
+  totalVotes: number
+  userVote?: string[]
 }
