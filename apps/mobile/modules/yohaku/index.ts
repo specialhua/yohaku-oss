@@ -53,10 +53,12 @@ interface YohakuNativeModule {
     title: string
     url: string
   }): Promise<void>
+  measureNoteHeroText(title: string, meta: string, width: number): number
   openAuthSession(
     url: string,
     scheme: string,
   ): Promise<{ type: 'cancel' } | { type: 'success'; url: string }>
+  parseMarkdown(markdown: string): string
   pauseTts(): Promise<void>
   playTts(): Promise<void>
   preloadTts(url: string): Promise<void>
@@ -278,6 +280,22 @@ type YohakuWebEmbedProps = ViewProps & {
 export const YohakuWebEmbed: ComponentType<YohakuWebEmbedProps> =
   requireNativeViewManager('Yohaku', 'YohakuWebEmbed')
 
+type YohakuCodeProps = ViewProps & {
+  boldFontFamily?: string
+  code: string
+  color?: ColorValue
+  fontFamily?: string
+  fontSize?: number
+  language?: string
+  lineHeight?: number
+  onContentSize?: (event: NativeSyntheticEvent<{ height: number }>) => void
+  padding?: number
+  paddingTop?: number
+}
+
+export const YohakuCode: ComponentType<YohakuCodeProps> =
+  requireNativeViewManager('Yohaku', 'YohakuCode')
+
 type YohakuMathProps = ViewProps & {
   color?: ColorValue
   fontSize?: number
@@ -295,13 +313,9 @@ export const YohakuKline: ComponentType<YohakuKlineProps> =
   requireNativeViewManager('Yohaku', 'YohakuKline')
 
 type YohakuStudyShellProps = ViewProps & {
-  accountImageUri?: string
   collapseDistance?: number
   ownerImageUri?: string
-  page?: number
   ringColor?: string
-  onPageScroll?: (event: NativeSyntheticEvent<{ progress: number }>) => void
-  onPageSelected?: (event: NativeSyntheticEvent<{ page: number }>) => void
 }
 
 export const YohakuStudyShell: ComponentType<YohakuStudyShellProps> =

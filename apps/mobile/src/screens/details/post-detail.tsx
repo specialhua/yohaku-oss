@@ -2,7 +2,7 @@ import { and, eq } from 'drizzle-orm'
 import { Stack, useIsPreview, useRouter } from 'expo-router'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ScrollView } from 'react-native'
-import { Dimensions, StyleSheet, View } from 'react-native'
+import { StyleSheet, View } from 'react-native'
 
 import { translatedBodyNeedsRefresh } from '@/api/article-meta'
 import { api } from '@/api/client'
@@ -14,12 +14,13 @@ import { posts } from '@/db/schema'
 import { useDatabaseSnapshot } from '@/db/use-database-snapshot'
 import { useLocale, useTranslations } from '@/i18n'
 import { recordReading } from '@/interactions/reading'
-import { presentArticleToc, tocHref } from '@/lib/article-toc'
 import { formatRelativeTime } from '@/lib/datetime'
 import { extractHeadings } from '@/lib/lexical-headings'
 import { openExternalUrl } from '@/lib/open-external'
 import { siteHref } from '@/lib/site-url'
 import { useOwner } from '@/owner/store'
+import { markdownArticle } from '@/rich/markdown/parse'
+import { markdownOpensOnWeb } from '@/rich/markdown/support'
 import { CommentComposeHost } from '@/screens/comments/comment-compose-provider'
 import {
   useIsActiveMember,
@@ -48,6 +49,7 @@ import { BodyLoadingIndicator, useReservedBodyHeight } from './body-slot'
 import { PaywallGate } from './paywall-gate'
 import { shouldUnlockPaywalledContent } from './should-unlock-paywall'
 import { useCollapsingTitle } from './use-collapsing-title'
+import { useOpenArticleToc } from './use-open-article-toc'
 import { useReadingPresence } from './use-reading-presence'
 import { useRetryableBodyRefresh } from './use-retryable-body-refresh'
 
@@ -103,7 +105,7 @@ export function PostDetailScreen({
   const post = snapshot ?? undefined
   const postId = post?.id
   const bodyVersion = post?.bodyVersion
-  const isMarkdown = post?.contentFormat === 'markdown'
+  const webOnly = markdownOpensOnWeb(post?.contentFormat)
   const webUrl = siteHref(`/posts/${categorySlug}/${slug}`)
   const locked = post?.articleMeta?.paywall?.locked === true
   const isOwner = session?.role === 'owner'
@@ -123,7 +125,7 @@ export function PostDetailScreen({
     enabled:
       updatesEnabled &&
       Boolean(post) &&
-      !isMarkdown &&
+      !webOnly &&
       translatedBodyNeedsRefresh(post?.articleMeta),
     refresh: async () => {
       if (post) await refreshPostBody(post)
@@ -137,7 +139,7 @@ export function PostDetailScreen({
     if (!updatesEnabled) return
     let cancelled = false
     const load = async () => {
-      if (post?.contentFormat === 'markdown') return
+      if (markdownOpensOnWeb(post?.contentFormat)) return
       if (post && !bodyIsStale(post)) {
         if (decorationIsStale(post)) void refreshPostBody(post)
         return
@@ -178,10 +180,10 @@ export function PostDetailScreen({
   }, [postId, bodyVersion, categorySlug, slug, locale, attempt, updatesEnabled])
 
   useEffect(() => {
-    if (updatesEnabled && !isPreview && isMarkdown) {
+    if (updatesEnabled && !isPreview && webOnly) {
       void openExternalUrl(webUrl)
     }
-  }, [isMarkdown, isPreview, updatesEnabled, webUrl])
+  }, [webOnly, isPreview, updatesEnabled, webUrl])
 
   const postRef = useRef(post)
   postRef.current = post
@@ -204,16 +206,33 @@ export function PostDetailScreen({
 
   const body =
     post?.contentFormat === 'lexical' && post.content ? post.content : null
-  const headings = useMemo(() => extractHeadings(body ?? ''), [body])
+  const markdownSource =
+    post?.contentFormat === 'markdown' && post.bodyVersion !== null
+      ? post.text
+      : null
+  const markdown = useMemo(
+    () => (markdownSource ? markdownArticle(markdownSource) : null),
+    [markdownSource],
+  )
+  const headings = useMemo(
+    () => markdown?.headings ?? extractHeadings(body ?? ''),
+    [body, markdown],
+  )
 
-  const { marks, onScrollMetrics } = useReadingPresence({
-    articleId: isPreview ? undefined : post?.id,
-    enabled: updatesEnabled,
-    openOnWeb: isPreview || isMarkdown,
-  })
+  const { marks, onScrollMetrics, presenceSnapshot, readerCount } =
+    useReadingPresence({
+      articleId: isPreview ? undefined : post?.id,
+      enabled: updatesEnabled,
+      openOnWeb: isPreview || webOnly,
+    })
+  const openToc = useOpenArticleToc(headings, presenceSnapshot)
   const headerSubtitle = post?.categoryName ?? post?.tags[0] ?? tt('posts')
   const { headerTitleProgress, headerOptions, onScroll, onTitleLayout } =
-    useCollapsingTitle(post?.title, headerSubtitle, onScrollMetrics, marks)
+    useCollapsingTitle(post?.title, headerSubtitle, onScrollMetrics, marks, {
+      onTitlePress:
+        headings.length > 0 || readerCount > 0 ? openToc : undefined,
+      readerCount,
+    })
   const tts = useTtsSession({
     articleId: post?.id,
     available: post?.articleMeta?.tts?.available === true,
@@ -239,17 +258,19 @@ export function PostDetailScreen({
       <ArticleMore
         listenAvailable={tts.available}
         listening={tts.isNarrating}
-        printAvailable={Boolean(body) && !showPaywallGate}
+        printAvailable={Boolean(body || markdown) && !showPaywallGate}
         title={post?.title}
         tocAvailable={headings.length > 0}
         url={webUrl}
         onListen={tts.start}
+        onToc={openToc}
         onPrint={
-          post && body
+          post && (body || markdown)
             ? () =>
                 print({
                   category: post.categoryName ?? tt('posts'),
-                  content: body,
+                  content: body ?? '',
+                  markdown,
                   createdAt: new Date(post.createdAt),
                   siteName: owner?.name || tp('site'),
                   title: post.title,
@@ -258,10 +279,6 @@ export function PostDetailScreen({
                 })
             : undefined
         }
-        onToc={() => {
-          presentArticleToc(headings, Dimensions.get('window').height)
-          router.push(tocHref())
-        }}
       />
       {post ? (
         <CommentComposeHost
@@ -359,7 +376,7 @@ export function PostDetailScreen({
                 onToggle: tts.toggle,
               }}
             />
-            {isMarkdown ? (
+            {webOnly || (markdownSource && !markdown) ? (
               <View style={{ minHeight: reservedBodyHeight }}>
                 <AppText
                   style={styles.placeholder}
@@ -369,12 +386,13 @@ export function PostDetailScreen({
                   {tc('openInBrowser')}
                 </AppText>
               </View>
-            ) : body ? (
+            ) : body || markdown ? (
               <ArticleBody
                 autoFollow={tts.autoFollow}
-                content={body}
+                content={body ?? ''}
                 enrichments={post?.enrichments ?? null}
                 highlightBlockId={tts.activeBlockId}
+                markdown={markdown}
                 queriesEnabled={updatesEnabled}
                 refId={post.id}
                 refType="post"

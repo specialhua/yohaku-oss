@@ -14,6 +14,7 @@ export interface LinkCardMeta {
   symbol?: string
   text: string
   tone?: MetaTone
+  toneDot?: boolean
 }
 
 export type LinkCardImageShape = 'avatar' | 'poster' | 'square' | 'thumb'
@@ -23,6 +24,7 @@ export interface LinkCardModel {
   host: string
   image?: string
   imageShape: LinkCardImageShape
+  internal: boolean
   label: string | null
   meta: LinkCardMeta[]
   symbol: string
@@ -52,6 +54,11 @@ const KIND_LABELS: Record<string, string> = {
 
 const KIND_SYMBOLS: Record<string, string> = {
   github: 'chevron.left.forwardslash.chevron.right',
+  pr: 'arrow.triangle.pull',
+  'pull-request': 'arrow.triangle.pull',
+  issue: 'smallcircle.filled.circle',
+  discussion: 'bubble.left.and.bubble.right',
+  commit: 'point.topleft.down.to.point.bottomright.curvepath',
   movie: 'film',
   tv: 'tv',
   book: 'book.closed',
@@ -66,11 +73,24 @@ const KIND_SYMBOLS: Record<string, string> = {
 const POSTER_KINDS = new Set(['movie', 'tv', 'book'])
 const SQUARE_KINDS = new Set(['album', 'song', 'music'])
 const AVATAR_KINDS = new Set(['user', 'self'])
+const SYMBOL_TILE_KINDS = new Set([
+  'pr',
+  'pull-request',
+  'issue',
+  'discussion',
+  'commit',
+])
 
 const STATE_TONES: Record<string, MetaTone> = {
   open: 'success',
   merged: 'info',
   closed: 'error',
+}
+
+const STATE_LABELS: Record<string, string> = {
+  open: '进行中',
+  merged: '已合并',
+  closed: '已关闭',
 }
 
 const DIFFICULTY_TONES: Record<string, MetaTone> = {
@@ -85,12 +105,21 @@ const count = (value: string) => {
 }
 
 const META_RULES: Array<[string, (value: string) => LinkCardMeta]> = [
-  ['state', (v) => ({ text: v, tone: STATE_TONES[v.toLowerCase()] })],
+  [
+    'state',
+    (v) => {
+      const state = v.toLowerCase()
+      const tone = STATE_TONES[state]
+      return tone
+        ? { text: STATE_LABELS[state] ?? v, tone, toneDot: true }
+        : { text: v }
+    },
+  ],
   [
     'difficulty',
     (v) => ({ text: v, tone: DIFFICULTY_TONES[v.toLowerCase()] }),
   ],
-  ['rating', (v) => ({ symbol: 'star.fill', text: v })],
+  ['rating', (v) => ({ symbol: 'star.fill', text: v, tone: 'warning' })],
   ['stars', (v) => ({ symbol: 'star', text: count(v) })],
   ['forks', (v) => ({ symbol: 'arrow.triangle.branch', text: count(v) })],
   [
@@ -134,6 +163,7 @@ export function linkCardModel(
       host,
       image: fallback.image || undefined,
       imageShape: 'thumb',
+      internal: false,
       label: null,
       meta: [],
       symbol: 'globe',
@@ -158,11 +188,13 @@ export function linkCardModel(
   return {
     description: entry.description || fallback.description || undefined,
     host,
-    image:
-      entry.thumbnailImage?.url ??
-      entry.previewImage?.url ??
-      (fallback.image || undefined),
+    image: SYMBOL_TILE_KINDS.has(kind)
+      ? undefined
+      : (entry.thumbnailImage?.url ??
+        entry.previewImage?.url ??
+        (fallback.image || undefined)),
     imageShape,
+    internal: category === 'self',
     label,
     meta: metaOf(entry),
     symbol: KIND_SYMBOLS[kind] ?? KIND_SYMBOLS[category] ?? 'globe',

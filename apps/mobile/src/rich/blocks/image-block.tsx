@@ -1,9 +1,11 @@
-import { StyleSheet, View } from 'react-native'
+import { Image, StyleSheet, View } from 'react-native'
 
-import { AppText, RemoteImage } from '@/components/ui'
+import { RemoteImage } from '@/components/ui'
 import { getSiteUrl } from '@/lib/site-url'
+import { noteCoverPlaceholderUri } from '@/screens/lists/note-cover'
 import { usePalette } from '@/theme/palette'
 
+import { MEDIA_RADIUS, MediaCaption } from './media-caption'
 import { type BlockProps, num, str } from './types'
 
 export function ImageBlock({ gallery, node }: BlockProps) {
@@ -11,39 +13,47 @@ export function ImageBlock({ gallery, node }: BlockProps) {
   const src = str(node.src)
   const width = num(node.width)
   const height = num(node.height)
+  // ponytail: Markdown images carry no size, so they letterbox in a 4:3 frame; store the API's image meta if exact ratios matter.
   const ratio = width && height ? width / height : 4 / 3
   const caption = str(node.caption) || str(node.altText)
+  const placeholder = noteCoverPlaceholderUri(str(node.thumbhash))
   if (!src) return null
   const images = gallery && gallery.includes(src) ? gallery : [src]
   return (
     <View style={styles.wrap}>
-      <RemoteImage
-        accessibilityLabel={caption}
-        contentFit="cover"
-        images={images}
-        index={Math.max(0, images.indexOf(src))}
-        siteReferer={getSiteUrl()}
-        uri={src}
+      <View
         style={[
-          styles.image,
+          styles.frame,
           { aspectRatio: ratio, backgroundColor: palette.neutral[2] },
         ]}
-      />
-      {caption ? (
-        <AppText
-          color={palette.neutral[6]}
-          style={styles.caption}
-          variant="meta"
-        >
-          {caption}
-        </AppText>
-      ) : null}
+      >
+        {placeholder ? (
+          <Image
+            source={{ uri: placeholder }}
+            style={StyleSheet.absoluteFill}
+          />
+        ) : null}
+        <RemoteImage
+          accessibilityLabel={caption}
+          contentFit={width && height ? 'cover' : 'contain'}
+          images={images}
+          index={Math.max(0, images.indexOf(src))}
+          siteReferer={getSiteUrl()}
+          style={StyleSheet.absoluteFill}
+          uri={src}
+        />
+      </View>
+      {caption ? <MediaCaption>{caption}</MediaCaption> : null}
     </View>
   )
 }
 
 const styles = StyleSheet.create({
-  wrap: { marginVertical: 12, gap: 8 },
-  image: { width: '100%', borderRadius: 6, overflow: 'hidden' },
-  caption: { textAlign: 'center' },
+  wrap: { marginVertical: 12, gap: 10 },
+  frame: {
+    width: '100%',
+    borderRadius: MEDIA_RADIUS,
+    borderCurve: 'continuous',
+    overflow: 'hidden',
+  },
 })

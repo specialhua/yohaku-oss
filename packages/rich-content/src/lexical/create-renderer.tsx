@@ -31,6 +31,7 @@ import {
   VideoRenderer,
 } from '@haklex/rich-compose/modules/video'
 import type { RichEditorVariant } from '@haklex/rich-editor'
+import { KaTeXRenderer } from '@haklex/rich-editor/renderers'
 import { allNodes } from '@haklex/rich-editor/static'
 import { NESTED_DOC_NODE_KEY } from '@haklex/rich-ext-nested-doc'
 import type { LexicalNodeConfig, SerializedEditorState } from 'lexical'
@@ -59,8 +60,8 @@ import { BlockBoundary } from './block-boundary'
 import {
   configuredDynamicModule,
   setDynamicCatalogHost,
-  useDynamicCatalogSettled,
 } from './dynamic-catalog'
+import { yohakuFileModule } from './file-module'
 import {
   CodeBlockOverride,
   lexicalAutolinkOverride,
@@ -75,7 +76,6 @@ import { LexicalDetailsOverride } from './overrides/details'
 import { lexicalHeadingOverride } from './overrides/heading'
 import { LexicalListItemOverride } from './overrides/list-item'
 import { lexicalTableOverrides } from './overrides/table'
-import { yohakuFileModule } from './file-module'
 import { yohakuChatModule } from './portable/chat-module'
 import { YohakuCodeSnippet } from './portable/code-snippet'
 import { staticExcalidrawModule } from './portable/excalidraw'
@@ -183,6 +183,10 @@ const lexicalCodeBlockModule: RichRendererModule = {
   name: 'code-block',
   renderers: { CodeBlock: CodeBlockOverride },
 }
+const katexModule: RichRendererModule = {
+  name: 'katex',
+  renderers: { KaTeX: KaTeXRenderer },
+}
 // Drops the upstream module's `lazyRenderers` entry: keeping it alongside a
 // local `renderers` override leaves the block empty on the SSR pass.
 const lexicalCodeSnippetModule: RichRendererModule = {
@@ -216,30 +220,8 @@ function withPrintRenderers(
   }
 }
 
-// The dynamic renderer checks its URL against the catalog on its first effect,
-// which runs before the catalog has been fetched. Hold the renderer back until
-// the catalog settles so a valid widget isn't reported as a load failure.
-function withCatalogGate(module: RichRendererModule): RichRendererModule {
-  if (!module.renderers) return module
-  return {
-    ...module,
-    renderers: Object.fromEntries(
-      Object.entries(module.renderers).map(([key, Comp]) => {
-        const Renderer = Comp as ComponentType<{ initialHeight?: number }>
-        function DynamicCatalogGate(props: { initialHeight?: number }) {
-          const settled = useDynamicCatalogSettled()
-          if (!settled)
-            return <div style={{ minHeight: props.initialHeight ?? 320 }} />
-          return <Renderer {...props} />
-        }
-        return [key, DynamicCatalogGate]
-      }),
-    ),
-  }
-}
-
 const modules: RichRendererModule[] = [
-  withPrintRenderers('dynamic', withCatalogGate(configuredDynamicModule)),
+  withPrintRenderers('dynamic', configuredDynamicModule),
   withPrintRenderers('embed', yohakuEmbedModule),
   configuredNestedDocModule,
   staticExcalidrawModule,
@@ -260,6 +242,7 @@ const modules: RichRendererModule[] = [
   boundedStockModule,
   lexicalLinkCardModule,
   lexicalCodeBlockModule,
+  katexModule,
 ]
 
 const RichContent = composeRenderer({

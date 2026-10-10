@@ -4,11 +4,11 @@ import {
   YohakuStretchCoverHost,
 } from '@modules/yohaku'
 import { and, eq } from 'drizzle-orm'
-import { Stack, useNavigation, useRouter } from 'expo-router'
+import { Stack, useNavigation } from 'expo-router'
 import { useHeaderHeight } from 'expo-router/react-navigation'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ScrollView } from 'react-native'
-import { Dimensions, StyleSheet, View } from 'react-native'
+import { StyleSheet, useWindowDimensions, View } from 'react-native'
 
 import { translatedBodyNeedsRefresh } from '@/api/article-meta'
 import { api } from '@/api/client'
@@ -19,16 +19,16 @@ import { notes, topics } from '@/db/schema'
 import { useDatabaseSnapshot } from '@/db/use-database-snapshot'
 import { useLocale, useTranslations } from '@/i18n'
 import { recordReading } from '@/interactions/reading'
-import { presentArticleToc, tocHref } from '@/lib/article-toc'
 import { formatRelativeTime } from '@/lib/datetime'
 import { extractHeadings } from '@/lib/lexical-headings'
 import { openExternalUrl } from '@/lib/open-external'
 import { siteHref } from '@/lib/site-url'
 import { useOwner } from '@/owner/store'
+import { markdownArticle } from '@/rich/markdown/parse'
+import { markdownOpensOnWeb } from '@/rich/markdown/support'
 import { CommentComposeHost } from '@/screens/comments/comment-compose-provider'
 import {
   NOTE_LATEST_HERO_HEIGHT,
-  NOTE_LATEST_TEXT_HERO_HEIGHT,
   noteCoverPlaceholderUri,
   noteCoverUrl,
   noteDetailCoverAnchorY,
@@ -57,6 +57,7 @@ import { BodyLoadingIndicator, useReservedBodyHeight } from './body-slot'
 import { NoteCoverBleed } from './note-cover-bleed'
 import { NoteTopicBlock } from './note-topic-block'
 import { useCollapsingTitle } from './use-collapsing-title'
+import { useOpenArticleToc } from './use-open-article-toc'
 import { useReadingPresence } from './use-reading-presence'
 import { useRetryableBodyRefresh } from './use-retryable-body-refresh'
 
@@ -71,7 +72,6 @@ export function NoteDetailScreen({
   nid: number
   sharedHero?: boolean
 }) {
-  const router = useRouter()
   const navigation = useNavigation() as unknown as TransitionStartNavigation
   const locale = useLocale()
   const t = useTranslations('detail')
@@ -83,6 +83,7 @@ export function NoteDetailScreen({
   const palette = usePalette()
   const reservedBodyHeight = useReservedBodyHeight()
   const headerHeight = useHeaderHeight()
+  const { width } = useWindowDimensions()
   const scrollRef = useRef<ScrollView>(null)
   const [failed, setFailed] = useState(false)
   const [attempt, setAttempt] = useState(0)
@@ -109,9 +110,9 @@ export function NoteDetailScreen({
   const coverPlaceholderUri = noteCoverPlaceholderUri(note?.coverThumbhash)
   const noteId = note?.id
   const bodyVersion = note?.bodyVersion
-  const isMarkdown = note?.contentFormat === 'markdown'
+  const webOnly = markdownOpensOnWeb(note?.contentFormat)
   const isLocked = Boolean(note?.hasPassword)
-  const openOnWeb = isLocked || isMarkdown
+  const openOnWeb = isLocked || webOnly
   const webUrl = siteHref(`/notes/${nid}`)
 
   useEffect(() => {
@@ -142,7 +143,7 @@ export function NoteDetailScreen({
     if (!updatesEnabled) return
     let cancelled = false
     const load = async () => {
-      if (note?.hasPassword || note?.contentFormat === 'markdown') return
+      if (note?.hasPassword || markdownOpensOnWeb(note?.contentFormat)) return
       if (note && !bodyIsStale(note)) {
         if (decorationIsStale(note)) void refreshNoteBody(note)
         return
@@ -185,15 +186,34 @@ export function NoteDetailScreen({
 
   const body =
     note?.contentFormat === 'lexical' && note.content ? note.content : null
-  const headings = useMemo(() => extractHeadings(body ?? ''), [body])
+  const markdownSource =
+    note?.contentFormat === 'markdown' &&
+    !note.hasPassword &&
+    note.bodyVersion !== null
+      ? note.text
+      : null
+  const markdown = useMemo(
+    () => (markdownSource ? markdownArticle(markdownSource) : null),
+    [markdownSource],
+  )
+  const headings = useMemo(
+    () => markdown?.headings ?? extractHeadings(body ?? ''),
+    [body, markdown],
+  )
 
-  const { marks, onScrollMetrics } = useReadingPresence({
-    articleId: note?.id,
-    enabled: updatesEnabled,
-    openOnWeb,
-  })
+  const { marks, onScrollMetrics, presenceSnapshot, readerCount } =
+    useReadingPresence({
+      articleId: note?.id,
+      enabled: updatesEnabled,
+      openOnWeb,
+    })
+  const openToc = useOpenArticleToc(headings, presenceSnapshot)
   const { headerTitleProgress, headerOptions, onScroll, onTitleLayout } =
-    useCollapsingTitle(note?.title, tt('notes'), onScrollMetrics, marks)
+    useCollapsingTitle(note?.title, tt('notes'), onScrollMetrics, marks, {
+      onTitlePress:
+        headings.length > 0 || readerCount > 0 ? openToc : undefined,
+      readerCount,
+    })
   const tts = useTtsSession({
     articleId: note?.id,
     available: note?.articleMeta?.tts?.available === true,
@@ -214,9 +234,15 @@ export function NoteDetailScreen({
     aiGen: note?.articleMeta?.aiGen,
     parts: metaParts,
   })
-  const heroHeight = coverUrl
-    ? NOTE_LATEST_HERO_HEIGHT
-    : NOTE_LATEST_TEXT_HERO_HEIGHT
+  const heroHeight = useMemo(
+    () =>
+      coverUrl
+        ? NOTE_LATEST_HERO_HEIGHT
+        : sharedHero
+          ? YohakuNative.measureNoteHeroText(note?.title ?? '', heroMeta, width)
+          : 0,
+    [coverUrl, sharedHero, note?.title, heroMeta, width],
+  )
 
   return (
     <View style={[styles.screen, { backgroundColor: palette.surface.desk }]}>
@@ -225,17 +251,19 @@ export function NoteDetailScreen({
       <ArticleMore
         listenAvailable={tts.available}
         listening={tts.isNarrating}
-        printAvailable={Boolean(body) && !isLocked}
+        printAvailable={Boolean(body || markdown) && !isLocked}
         title={note?.title}
         tocAvailable={headings.length > 0}
         url={webUrl}
         onListen={tts.start}
+        onToc={openToc}
         onPrint={
-          note && body
+          note && (body || markdown)
             ? () =>
                 print({
                   category: tt('notes'),
-                  content: body,
+                  content: body ?? '',
+                  markdown,
                   createdAt: new Date(note.createdAt),
                   siteName: owner?.name || tp('site'),
                   title: note.title,
@@ -244,10 +272,6 @@ export function NoteDetailScreen({
                 })
             : undefined
         }
-        onToc={() => {
-          presentArticleToc(headings, Dimensions.get('window').height)
-          router.push(tocHref())
-        }}
       />
       {note ? (
         <CommentComposeHost
@@ -330,7 +354,7 @@ export function NoteDetailScreen({
                       {t('passwordHint')}
                     </AppText>
                   </View>
-                ) : isMarkdown ? (
+                ) : webOnly || (markdownSource && !markdown) ? (
                   <View style={{ minHeight: reservedBodyHeight }}>
                     <AppText
                       style={styles.placeholder}
@@ -340,12 +364,13 @@ export function NoteDetailScreen({
                       {tc('openInBrowser')}
                     </AppText>
                   </View>
-                ) : body ? (
+                ) : body || markdown ? (
                   <ArticleBody
                     autoFollow={tts.autoFollow}
-                    content={body}
+                    content={body ?? ''}
                     enrichments={note?.enrichments ?? null}
                     highlightBlockId={tts.activeBlockId}
+                    markdown={markdown}
                     queriesEnabled={updatesEnabled}
                     refId={note.id}
                     refType="note"
@@ -390,6 +415,9 @@ export function NoteDetailScreen({
                     noteHeroTitle={note.title}
                     noteHeroTitleColor={palette.neutral[10]}
                     style={styles.screen}
+                    noteHeroContentInsetTop={
+                      coverUrl ? 0 : styles.content.paddingTop
+                    }
                   >
                     {scroll}
                   </YohakuNoteHeroHost>

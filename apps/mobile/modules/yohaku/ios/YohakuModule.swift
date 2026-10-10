@@ -98,6 +98,18 @@ public class YohakuModule: Module {
       Double(sqliteDatabaseBytes())
     }
 
+    Function("measureNoteHeroText") { (title: String, meta: String, width: Double) -> Double in
+      let measure = {
+        var spec = YohakuNoteHeroSpec()
+        spec.title = title
+        spec.meta = meta
+        let hero = YohakuNoteHeroView()
+        hero.update(spec: spec, titleColor: nil, metaColor: nil)
+        return Double(hero.sizeThatFits(CGSize(width: width, height: 0)).height)
+      }
+      return Thread.isMainThread ? measure() : DispatchQueue.main.sync(execute: measure)
+    }
+
     Function("prepareNoteHeroTransition") { (noteID: String) in
       if Thread.isMainThread {
         YohakuSharedNoteHeroCoordinator.shared.prepareTransition(noteID: noteID)
@@ -118,6 +130,10 @@ public class YohakuModule: Module {
 
     Function("secretDelete") { (key: String) in
       SecretStore.delete(key)
+    }
+
+    Function("parseMarkdown") { (markdown: String) -> String in
+      try MarkdownAST.json(for: markdown)
     }
 
     Function("showToast") { (message: String) in
@@ -364,6 +380,51 @@ public class YohakuModule: Module {
       }
     }
 
+    View(YohakuCodeView.self) {
+      ViewName("YohakuCode")
+      Events("onContentSize")
+
+      Prop("code") { (view: YohakuCodeView, value: String) in
+        view.code = value
+      }
+
+      Prop("language") { (view: YohakuCodeView, value: String?) in
+        view.language = value ?? ""
+      }
+
+      Prop("fontFamily") { (view: YohakuCodeView, value: String?) in
+        view.fontFamily = value
+      }
+
+      Prop("fontSize") { (view: YohakuCodeView, value: Double) in
+        view.fontSize = CGFloat(value)
+      }
+
+      Prop("lineHeight") { (view: YohakuCodeView, value: Double) in
+        view.lineHeight = CGFloat(value)
+      }
+
+      Prop("padding") { (view: YohakuCodeView, value: Double) in
+        view.padding = CGFloat(value)
+      }
+
+      Prop("paddingTop") { (view: YohakuCodeView, value: Double?) in
+        view.paddingTop = value.map { CGFloat($0) }
+      }
+
+      Prop("boldFontFamily") { (view: YohakuCodeView, value: String?) in
+        view.boldFontFamily = value
+      }
+
+      Prop("color") { (view: YohakuCodeView, value: UIColor?) in
+        view.textColor = value ?? .label
+      }
+
+      OnViewDidUpdateProps { view in
+        view.update()
+      }
+    }
+
     View(YohakuKlineView.self) {
       ViewName("YohakuKline")
 
@@ -399,18 +460,8 @@ public class YohakuModule: Module {
     View(YohakuStudyShellView.self) {
       ViewName("YohakuStudyShell")
 
-      Events("onPageScroll", "onPageSelected")
-
-      Prop("page") { (view: YohakuStudyShellView, value: Double) in
-        view.setPage(value)
-      }
-
       Prop("ownerImageUri") { (view: YohakuStudyShellView, value: String) in
         view.setOwnerImageUri(value)
-      }
-
-      Prop("accountImageUri") { (view: YohakuStudyShellView, value: String) in
-        view.setAccountImageUri(value)
       }
 
       Prop("ringColor") { (view: YohakuStudyShellView, color: UIColor?) in

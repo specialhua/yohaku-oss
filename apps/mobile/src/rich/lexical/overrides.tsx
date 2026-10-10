@@ -7,6 +7,7 @@ import {
   cloneElement,
   Fragment,
   isValidElement,
+  type ReactElement,
   type ReactNode,
 } from 'react'
 
@@ -74,20 +75,43 @@ const inlineText =
   ): BuiltinNodeRenderer =>
   (node, key) => <RunMarker key={key} run={{ ...patch, text: toText(node) }} />
 
-// Block decorators (excalidraw, images) can sit inside a paragraph; they are
-// hoisted out as sibling blocks so the segment grouping sees them.
-function splitHoisted(children: ReactNode): {
-  hoisted: ReactNode[]
-  inline: ReactNode[]
-} {
-  const hoisted: ReactNode[] = []
-  const inline: ReactNode[] = []
+// Block decorators (excalidraw, images) can sit inside a paragraph; the text is
+// cut at each one so the image keeps its place in the reading order. The pieces
+// become `id~n` blocks, which anchors fold back into one paragraph.
+export function textBlockParts(
+  block: Omit<RichTextBlock, 'id' | 'runs'>,
+  children: ReactNode,
+): ReactElement[] {
+  const parts: ReactElement[] = []
+  let inline: ReactNode[] = []
+  const flush = (keepEmpty: boolean) => {
+    const runs = collectRuns(inline)
+    inline = []
+    if (!keepEmpty && !runs.some((run) => run.text.trim())) return
+    parts.push(
+      <TextBlockMarker block={{ ...block, runs }} key={`t${parts.length}`} />,
+    )
+  }
   Children.forEach(children, (child) => {
-    if (isValidElement(child) && child.type === ViewBlockMarker)
-      hoisted.push(child)
-    else inline.push(child)
+    if (isValidElement(child) && child.type === ViewBlockMarker) {
+      flush(false)
+      parts.push(child)
+    } else {
+      inline.push(child)
+    }
   })
-  return { hoisted, inline }
+  flush(parts.length === 0)
+  return parts
+}
+
+export function textBlockElement(
+  block: Omit<RichTextBlock, 'id' | 'runs'>,
+  key: string,
+  children: ReactNode,
+): ReactNode {
+  const parts = textBlockParts(block, children)
+  if (parts.length === 1) return cloneElement(parts[0]!, { key })
+  return <Fragment key={key}>{parts}</Fragment>
 }
 
 const textBlock =
@@ -95,21 +119,27 @@ const textBlock =
     role: RichTextBlock['role'],
     extra?: (node: any) => Partial<RichTextBlock>,
   ): BuiltinNodeRenderer =>
-  (node, key, children) => {
-    const { hoisted, inline } = splitHoisted(children)
-    const runs = collectRuns(inline)
-    const block =
-      runs.some((run) => run.text.trim()) || hoisted.length === 0 ? (
-        <TextBlockMarker block={{ role, runs, ...extra?.(node) }} key={key} />
-      ) : null
-    if (hoisted.length === 0) return block
-    return (
-      <Fragment key={key}>
-        {block}
-        {hoisted}
-      </Fragment>
-    )
-  }
+  (node, key, children) =>
+    textBlockElement({ role, ...extra?.(node) }, key, children)
+
+// rich-compose strips child node fields (only `type` survives), so the url and
+// label are read back from the rendered link runs.
+function bareLinkUrl(node: any, children: ReactNode): string | null {
+  const only = node.children?.length === 1 ? node.children[0] : null
+  if (!only || (only.type !== 'autolink' && only.type !== 'link')) return null
+  const runs = collectRuns(children)
+  const url = runs[0]?.href
+  if (!url || url.startsWith('#')) return null
+  if (runs.some((run) => run.href !== url)) return null
+  if (only.type === 'link' && runsText(runs).trim() !== url) return null
+  return url
+}
+
+const paragraph: BuiltinNodeRenderer = (node, key, children, fallback) => {
+  const url = bareLinkUrl(node, children)
+  if (!url) return textBlock('paragraph')(node, key, children, fallback)
+  return <ViewBlockMarker key={key} node={{ type: 'link-card', url }} />
+}
 
 const viewBlock: BuiltinNodeRenderer = (node, key, children) => (
   <ViewBlockMarker key={key} node={node}>
@@ -228,11 +258,18 @@ export const nativeBuiltinOverrides: Record<string, BuiltinNodeRenderer> = {
   link: inline((node) => ({ href: String(node.url ?? '') })),
   autolink: inline((node) => ({ href: String(node.url ?? '') })),
   spoiler: inline(() => ({ spoiler: true })),
-  ruby: inline(() => ({})),
+  ruby: (node, key, children) => (
+    <InlineMarker
+      key={key}
+      patch={node.reading ? { ruby: String(node.reading), rubyId: key } : {}}
+    >
+      {children}
+    </InlineMarker>
+  ),
   mention: inlineText((node) => `@${node.displayName || node.handle || ''}`, {
-    bold: true,
+    mention: true,
   }),
-  tag: inlineText((node) => `#${node.text ?? ''}`, { code: true }),
+  tag: inlineText((node) => `#${node.text ?? ''}`, { tag: true }),
   footnote: (node, key) => {
     const identifier = String(node.identifier ?? '')
     return (
@@ -247,7 +284,7 @@ export const nativeBuiltinOverrides: Record<string, BuiltinNodeRenderer> = {
   }),
   comment: () => null,
   'code-highlight': inlineText((node) => String(node.text ?? '')),
-  paragraph: textBlock('paragraph'),
+  paragraph,
   heading: textBlock('heading', (node) => ({
     level: Number(String(node.tag ?? 'h2').slice(1)) || 2,
   })),

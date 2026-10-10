@@ -1,87 +1,100 @@
+import type { ComponentType, ReactNode } from 'react'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { expect, it, vi } from 'vitest'
 
 import type { HostCapabilities } from '../host'
+import {
+  configuredDynamicModule,
+  setDynamicCatalogHost,
+} from './dynamic-catalog'
 
-// Each case needs a catalog module with its own settled state.
-async function loadCatalog() {
+it('holds the dynamic renderer until the allowlist catalog settles', async () => {
+  const Provider = configuredDynamicModule.Provider as ComponentType<{
+    children: ReactNode
+  }>
+  const Dynamic = configuredDynamicModule.renderers!.Dynamic as ComponentType<{
+    initialHeight: number
+    url: string
+  }>
+  const el = document.createElement('div')
+  const root = createRoot(el)
+
+  await act(async () => {
+    root.render(
+      <Provider>
+        <Dynamic initialHeight={120} url="https://cdn.example.com/w.js" />
+      </Provider>,
+    )
+  })
+  expect(el.textContent).toBe('')
+
+  let resolveCatalog!: (v: unknown) => void
+  setDynamicCatalogHost({
+    fetchJSON: () =>
+      new Promise((resolve) => {
+        resolveCatalog = resolve
+      }),
+  } as unknown as HostCapabilities)
+  await act(async () => {
+    resolveCatalog({ components: [{ url: 'https://cdn.example.com/w.js' }] })
+  })
+
+  expect(el.textContent).not.toBe('')
+  expect(el.textContent).not.toContain('Failed to load component')
+  act(() => root.unmount())
+})
+
+// These cases need a catalog module with its own settled state.
+async function mountFreshDynamic() {
   vi.resetModules()
-  return import('./dynamic-catalog')
+  const catalog = await import('./dynamic-catalog')
+  const Provider = catalog.configuredDynamicModule.Provider as ComponentType<{
+    children: ReactNode
+  }>
+  const Dynamic = catalog.configuredDynamicModule.renderers!
+    .Dynamic as ComponentType<{ initialHeight: number; url: string }>
+  const el = document.createElement('div')
+  const root = createRoot(el)
+  await act(async () => {
+    root.render(
+      <Provider>
+        <Dynamic initialHeight={120} url="https://cdn.example.com/w.js" />
+      </Provider>,
+    )
+  })
+  return { catalog, el, root }
 }
 
-async function renderSettledProbe(
-  useDynamicCatalogSettled: () => boolean,
-): Promise<() => boolean> {
-  const container = document.createElement('div')
-  document.body.append(container)
-  const root = createRoot(container)
-
-  let settled = false
-  function Probe() {
-    settled = useDynamicCatalogSettled()
-    return null
-  }
+it('releases the renderer when the catalog cannot be fetched, so it reports the failure itself', async () => {
+  const { catalog, el, root } = await mountFreshDynamic()
+  expect(el.textContent).toBe('')
 
   await act(async () => {
-    root.render(<Probe />)
+    catalog.setDynamicCatalogHost({
+      fetchJSON: () => Promise.reject(new Error('offline')),
+    } as unknown as HostCapabilities)
   })
-  return () => settled
-}
 
-it('stays unsettled until the catalog request resolves', async () => {
-  const { setDynamicCatalogHost, useDynamicCatalogSettled } =
-    await loadCatalog()
-
-  let release: (value: unknown) => void = () => {}
-  const fetchJSON = vi.fn(
-    () => new Promise((resolve) => (release = resolve)),
-  ) as unknown as HostCapabilities['fetchJSON']
-  setDynamicCatalogHost({ fetchJSON } as HostCapabilities)
-
-  const settled = await renderSettledProbe(useDynamicCatalogSettled)
-  expect(settled()).toBe(false)
-
-  await act(async () => {
-    release({ components: [{ url: 'https://cdn.example.com/widget.js' }] })
-  })
-  expect(settled()).toBe(true)
+  expect(el.textContent).not.toBe('')
+  act(() => root.unmount())
 })
 
-it('settles even when the catalog cannot be fetched, so the renderer reports the failure itself', async () => {
-  const { setDynamicCatalogHost, useDynamicCatalogSettled } =
-    await loadCatalog()
-
-  const fetchJSON = vi.fn(() =>
-    Promise.reject(new Error('offline')),
-  ) as unknown as HostCapabilities['fetchJSON']
-  setDynamicCatalogHost({ fetchJSON } as HostCapabilities)
-
-  const settled = await renderSettledProbe(useDynamicCatalogSettled)
-  await act(async () => {
-    await Promise.resolve()
-  })
-  expect(settled()).toBe(true)
-})
-
-it('falls through after a timeout when the catalog request never lands', async () => {
+it('releases the renderer after a timeout when the catalog request never lands', async () => {
   vi.useFakeTimers()
   try {
-    const { setDynamicCatalogHost, useDynamicCatalogSettled } =
-      await loadCatalog()
-
-    const fetchJSON = vi.fn(
-      () => new Promise(() => {}),
-    ) as unknown as HostCapabilities['fetchJSON']
-    setDynamicCatalogHost({ fetchJSON } as HostCapabilities)
-
-    const settled = await renderSettledProbe(useDynamicCatalogSettled)
-    expect(settled()).toBe(false)
+    const { catalog, el, root } = await mountFreshDynamic()
+    catalog.setDynamicCatalogHost({
+      fetchJSON: () => new Promise(() => {}),
+    } as unknown as HostCapabilities)
+    expect(el.textContent).toBe('')
 
     await act(async () => {
       vi.advanceTimersByTime(3000)
     })
-    expect(settled()).toBe(true)
+
+    expect(el.textContent).not.toBe('')
+    act(() => root.unmount())
   } finally {
     vi.useRealTimers()
   }
