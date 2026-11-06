@@ -43,7 +43,8 @@ const DEFAULT_LIMIT_LIST = 24
 
 export function AfilmoryRenderer(props: AfilmorySlotProps) {
   const printFallback = usePrintFallback('afilmory', {
-    title: 'title' in props && typeof props.title === 'string' ? props.title : '',
+    title:
+      'title' in props && typeof props.title === 'string' ? props.title : '',
   })
   if (printFallback !== null) {
     return <p className="print-block-fallback">{printFallback}</p>
