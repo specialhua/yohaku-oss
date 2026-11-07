@@ -64,7 +64,7 @@
     "exif-js": "2.3.0",
     "jsondiffpatch": "^0.7.7",
     "lightweight-charts": "^5.2.1",
-    "lumeo": "^0.1.1",
+    "lumeo": "^0.1.2",
     "markdown-to-jsx": "npm:@innei/markdown-to-jsx-yet@7.7.7-11",
     "roughjs": "^4.6.6",
     "slot-text": "^0.3.4",
